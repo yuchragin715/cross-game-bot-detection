@@ -5,11 +5,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
 
-
 def calibrate_threshold(human_scores, target_fpr=0.05):
     human_scores = np.asarray(human_scores)
     return float(np.quantile(human_scores, 1.0 - target_fpr))
 
+def _rate_above(scores, thr):
+    return float((np.asarray(scores) > thr).mean())
 
 def train_bot_detector(
     human_df,
@@ -59,16 +60,14 @@ def train_bot_detector(
 
     return model, acc
 
-
 def threshold_sweep_table(ph, pb, thresholds=None):
     if thresholds is None:
         thresholds = np.linspace(0.0, 1.0, 21)
     return pd.DataFrame({
         "threshold": thresholds,
-        "detect": [(pb >= t).mean() for t in thresholds],
-        "FP": [(ph >= t).mean() for t in thresholds],
+        "detect": [_rate_above(pb, t) for t in thresholds],
+        "FP": [_rate_above(ph, t) for t in thresholds],
     })
-
 
 def diagnose_cross_game(
     tag,
@@ -87,8 +86,8 @@ def diagnose_cross_game(
     pb = model.predict_proba(bot_df[cols])[:, 1]
     auc = roc_auc_score(np.r_[np.zeros(len(ph)), np.ones(len(pb))], np.r_[ph, pb])
     thr = calibrate_threshold(ph, target_fpr=target_fpr)
-    detect_cal = float((pb >= thr).mean())
-    fp_cal = float((ph >= thr).mean())
+    detect_cal = _rate_above(pb, thr)
+    fp_cal = _rate_above(ph, thr)
     detect_05 = float((pb >= 0.5).mean())
     fp_05 = float((ph >= 0.5).mean())
 

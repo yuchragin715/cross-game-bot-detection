@@ -51,6 +51,7 @@ def generate_smooth_bot_game(
     base_speed_range=(5, 25),
     jitter=1.5,
     seed=None,
+    round_deltas=True,
 ):
     rng = np.random.default_rng(seed)
 
@@ -75,8 +76,10 @@ def generate_smooth_bot_game(
             interval_ms = max(1, int(rng.normal(mean_interval_ms, 2)))
             current_time += interval_ms
 
-            dx_list.append(round(dx))
-            dy_list.append(round(dy))
+            if round_deltas:
+                dx, dy = round(dx), round(dy)
+            dx_list.append(dx)
+            dy_list.append(dy)
             times.append(current_time)
             events_done += 1
 
@@ -91,5 +94,5 @@ def estimate_smooth_params(human_df):
     return {
         "mean_interval_ms": mean_interval_ms,
         "base_speed_range": (base * 0.5, base * 1.5),
-        "jitter": max(0.5, base * 0.1),  # ~10% keeps it mechanical
+        "jitter": base * 0.1,
     }
