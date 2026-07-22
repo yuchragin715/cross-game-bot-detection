@@ -11,7 +11,8 @@ CSGO_DATA_ROOT = DATA_DIR / "CSGO" / "data"
 RNG_SEED = 42
 
 # Stitch bot (block bootstrap)
-SEGMENT_MS = 2000              # segment length (ms)
+SEGMENT_MS = 2000              # legacy center (docs); cutting uses SEGMENT_MS_RANGE
+SEGMENT_MS_RANGE = (1500, 2500)  # randomized chunk length (avoids 2s periodicity)
 MIN_EVENTS = 10              # min events per segment
 TARGET_DURATION_MS = 180000  # ~3 min synthetic game (matches one RE game)
 
