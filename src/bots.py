@@ -17,7 +17,6 @@ def _subsample(arr, max_samples, rng):
 
 
 def _clip_percentiles(arr, p_low=10.0, p_high=90.0):
-    """Keep the bulk of a heavy-tailed distribution (drop extreme flicks)."""
     arr = np.asarray(arr, dtype=float)
     lo, hi = np.percentile(arr, [p_low, p_high])
     kept = arr[(arr >= lo) & (arr <= hi)]
@@ -32,14 +31,6 @@ def collect_human_motion_samples(
     step_p_high=90.0,
     rng=None,
 ):
-    """
-    Pool human timing + kinematics for bot generation.
-
-    Steps/angles ignore near-zero jitter (adaptive floor) and step lengths are
-    clipped to [p_low, p_high] so smooth bots do not lock a rare huge flick
-    for an entire 20–60 event segment (that made trajectories explode and
-    collapsed cross-game smooth separation).
-    """
     if rng is None:
         rng = np.random.default_rng(RNG_SEED)
 
@@ -92,6 +83,7 @@ def collect_human_motion_samples(
 
     return {
         "dt_samples": _subsample(np.concatenate(dt_chunks), max_samples, rng),
+        "dt_by_session": [np.asarray(c, dtype=float) for c in dt_chunks],
         "step_samples": _subsample(step_samples, max_samples, rng),
         "angle_samples": _subsample(angle_samples, max_samples, rng),
         "min_step_floor": float(min_step),
@@ -120,6 +112,31 @@ def _sample_dt_ms(rng, dt_samples):
     return max(1, int(round(float(rng.choice(dt_samples)))))
 
 
+def _resolve_dt_samples(rng, dt_samples=None, dt_by_session=None):
+    if dt_by_session is not None:
+        sessions = [np.asarray(s, dtype=float) for s in dt_by_session if len(s) > 0]
+        if sessions:
+            return sessions[int(rng.integers(0, len(sessions)))]
+    if dt_samples is None:
+        raise ValueError("_resolve_dt_samples: need dt_samples or dt_by_session")
+    dt_samples = np.asarray(dt_samples, dtype=float)
+    if len(dt_samples) == 0:
+        raise ValueError("_resolve_dt_samples: empty dt_samples")
+    return dt_samples
+
+
+def _mean_interval_ms(dt_samples, dt_by_session=None):
+    if dt_by_session is not None:
+        means = [
+            float(np.mean(np.asarray(s, dtype=float)))
+            for s in dt_by_session
+            if len(s) > 0
+        ]
+        if means:
+            return float(np.median(means))
+    return float(np.median(np.asarray(dt_samples, dtype=float)))
+
+
 # stitch bot
 def build_segments(
     mouse_df,
@@ -128,10 +145,6 @@ def build_segments(
     rng=None,
     segment_ms=None,  # ignored; kept so old keyword calls do not crash
 ):
-    """
-    Cut human traces into chunks with randomized duration to avoid a fixed
-    ~2s periodicity (segment_ms_range default 1500–2500 ms).
-    """
     if rng is None:
         rng = np.random.default_rng(RNG_SEED)
     lo, hi = int(segment_ms_range[0]), int(segment_ms_range[1])
@@ -164,13 +177,11 @@ def stitch_bot_game(
     dt_samples,
     target_duration_ms=TARGET_DURATION_MS,
     rng=None,
+    dt_by_session=None,
 ):
-    """Block-bootstrap bot; inter-segment gaps drawn from human dt samples."""
     if rng is None:
         rng = np.random.default_rng(RNG_SEED)
-    dt_samples = np.asarray(dt_samples, dtype=float)
-    if len(dt_samples) == 0:
-        raise ValueError("stitch_bot_game: dt_samples is empty")
+    dt_samples = _resolve_dt_samples(rng, dt_samples=dt_samples, dt_by_session=dt_by_session)
 
     parts = []
     current_time = 0
@@ -199,7 +210,7 @@ def generate_smooth_bot_game(
     jitter=1.5,
     seed=None,
     round_deltas=True,
-    # accepted from **estimate_smooth_params / old callers; unused for sampling
+    dt_by_session=None,
     mean_interval_ms=None,
     step_median=None,
     base_speed_range=None,
@@ -207,24 +218,20 @@ def generate_smooth_bot_game(
     min_step_floor=None,
     step_clip=None,
 ):
-    """
-    Mechanical bot:
-      - intervals from human dt
-      - heading from human atan2(dy, dx) (moving events only)
-      - step length from human hypot(dx, dy) (percentile-clipped bulk)
-    """
     if dt_samples is None or step_samples is None or angle_samples is None:
         raise ValueError(
             "generate_smooth_bot_game: dt_samples, step_samples, and "
             "angle_samples are required"
         )
-    dt_samples = np.asarray(dt_samples, dtype=float)
     step_samples = np.asarray(step_samples, dtype=float)
     angle_samples = np.asarray(angle_samples, dtype=float)
-    if min(len(dt_samples), len(step_samples), len(angle_samples)) == 0:
+    if min(len(step_samples), len(angle_samples)) == 0:
         raise ValueError("generate_smooth_bot_game: empty motion sample array")
 
     rng = np.random.default_rng(seed)
+    dt_samples = _resolve_dt_samples(
+        rng, dt_samples=dt_samples, dt_by_session=dt_by_session
+    )
     dx_list, dy_list, times = [], [], []
     current_time = 0
     events_done = 0
@@ -262,14 +269,11 @@ def estimate_smooth_params(
     angle_samples=None,
     min_step_floor=None,
     step_clip=None,
+    dt_by_session=None,
     **_extra,
 ):
-    """
-    Build smooth-bot kwargs from empirical human motion.
-
-    step_median / jitter use median hypot of the (already clipped) step pool,
-    not avg_speed * mean_dt — same units as dx/dy, no 1000x unit trap.
-    """
+    if dt_by_session is None:
+        dt_by_session = _extra.get("dt_by_session")
     dt_samples = np.asarray(dt_samples, dtype=float)
     if len(dt_samples) == 0:
         raise ValueError("estimate_smooth_params: dt_samples is empty")
@@ -289,7 +293,7 @@ def estimate_smooth_params(
         legacy = float("nan")
 
     out = {
-        "mean_interval_ms": float(np.median(dt_samples)),
+        "mean_interval_ms": _mean_interval_ms(dt_samples, dt_by_session),
         "step_median": step_median,
         "jitter": step_median * 0.1,
         "dt_samples": dt_samples,
@@ -297,6 +301,8 @@ def estimate_smooth_params(
         "angle_samples": angle_samples,
         "legacy_base_speed_times_dt": legacy,
     }
+    if dt_by_session is not None:
+        out["dt_by_session"] = dt_by_session
     if min_step_floor is not None:
         out["min_step_floor"] = min_step_floor
     if step_clip is not None:
@@ -305,7 +311,6 @@ def estimate_smooth_params(
 
 
 def smooth_params_for_print(params):
-    """Omit large sample arrays when logging."""
     dt = np.asarray(params["dt_samples"], dtype=float)
     step = np.asarray(params["step_samples"], dtype=float)
     ang = np.asarray(params["angle_samples"], dtype=float)
@@ -320,6 +325,8 @@ def smooth_params_for_print(params):
         "step_p05": float(np.percentile(step, 5)),
         "step_p95": float(np.percentile(step, 95)),
     }
+    if "dt_by_session" in params and params["dt_by_session"] is not None:
+        out["n_dt_sessions"] = len(params["dt_by_session"])
     if "legacy_base_speed_times_dt" in params:
         out["legacy_base_speed_times_dt"] = params["legacy_base_speed_times_dt"]
     if "step_clip" in params:
@@ -327,3 +334,185 @@ def smooth_params_for_print(params):
     if "min_step_floor" in params:
         out["min_step_floor"] = params["min_step_floor"]
     return out
+
+# bezier bot
+def _ease_out_quad(u):
+    u = np.asarray(u, dtype=float)
+    return 1.0 - (1.0 - u) ** 2
+
+def _cubic_bezier_points(p0, p1, p2, p3, n_points, ease=True):
+    p0 = np.asarray(p0, dtype=float).reshape(1, 2)
+    p1 = np.asarray(p1, dtype=float).reshape(1, 2)
+    p2 = np.asarray(p2, dtype=float).reshape(1, 2)
+    p3 = np.asarray(p3, dtype=float).reshape(1, 2)
+    u = np.linspace(0.0, 1.0, int(n_points))[:, None]
+    t = _ease_out_quad(u) if ease else u
+    w0, w1, w2, w3 = (1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t ** 2, t ** 3
+    return w0 * p0 + w1 * p1 + w2 * p2 + w3 * p3
+
+def _add_normal_distortion(pts, rng, distortion):
+    pts = np.asarray(pts, dtype=float).copy()
+    distortion = float(distortion)
+    if len(pts) < 3 or distortion <= 0:
+        return pts
+
+    tangent = np.gradient(pts, axis=0)
+    norms = np.linalg.norm(tangent, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    tangent = tangent / norms
+    perp = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1)
+    offset = perp * rng.normal(0.0, distortion, size=(len(pts), 1))
+    offset[0] = 0.0
+    offset[-1] = 0.0
+    return pts + offset
+
+def _random_stroke_controls(rng, step_samples, angle_samples, stroke_steps, bend_scale):
+    step = float(rng.choice(np.asarray(step_samples, dtype=float)))
+    angle = float(rng.choice(np.asarray(angle_samples, dtype=float)))
+    n_events = max(int(stroke_steps), 1)
+    span = step * n_events
+
+    direction = np.array([np.cos(angle), np.sin(angle)])
+    normal = np.array([-direction[1], direction[0]])
+    p0 = np.zeros(2)
+    p3 = direction * span
+    p1 = direction * (span / 3.0) + normal * rng.normal(0.0, bend_scale * span)
+    p2 = direction * (2.0 * span / 3.0) + normal * rng.normal(0.0, bend_scale * span)
+    return p0, p1, p2, p3
+
+def generate_bezier_stroke(
+    rng,
+    step_samples,
+    angle_samples,
+    stroke_steps,
+    distortion,
+    bend_scale=0.15,
+    ease=True,
+):
+    n_points = max(int(stroke_steps) + 1, 3)
+    p0, p1, p2, p3 = _random_stroke_controls(
+        rng, step_samples, angle_samples, stroke_steps, bend_scale
+    )
+    pts = _cubic_bezier_points(p0, p1, p2, p3, n_points, ease=ease)
+    pts = _add_normal_distortion(pts, rng, distortion)
+    d = np.diff(pts, axis=0)
+    return d[:, 0], d[:, 1]
+
+def estimate_bezier_params(
+    human_df,
+    dt_samples,
+    step_samples=None,
+    angle_samples=None,
+    stroke_points_range=(20, 60),
+    bend_scale=0.15,
+    min_step_floor=None,
+    step_clip=None,
+    dt_by_session=None,
+    **_extra,
+):
+    if dt_by_session is None:
+        dt_by_session = _extra.get("dt_by_session")
+    base = estimate_smooth_params(
+        human_df,
+        dt_samples,
+        step_samples=step_samples,
+        angle_samples=angle_samples,
+        min_step_floor=min_step_floor,
+        step_clip=step_clip,
+        dt_by_session=dt_by_session,
+    )
+    base.update({
+        "stroke_points_range": tuple(stroke_points_range),
+        "distortion": float(base["step_median"] * 0.1),
+        "bend_scale": float(bend_scale),
+        "ease": True,
+    })
+    return base
+
+
+def bezier_params_for_print(params):
+    out = smooth_params_for_print(params)
+    for k in ("stroke_points_range", "distortion", "bend_scale", "ease"):
+        if k in params:
+            out[k] = params[k]
+    return out
+
+
+def generate_bezier_bot_game(
+    n_events=5800,
+    dt_samples=None,
+    step_samples=None,
+    angle_samples=None,
+    stroke_points_range=(20, 60),
+    distortion=1.5,
+    bend_scale=0.15,
+    ease=True,
+    seed=None,
+    round_deltas=True,
+    target_duration_ms=None,
+    dt_by_session=None,
+    mean_interval_ms=None,
+    step_median=None,
+    jitter=None,
+    base_speed_range=None,
+    legacy_base_speed_times_dt=None,
+    min_step_floor=None,
+    step_clip=None,
+):
+    if dt_samples is None or step_samples is None or angle_samples is None:
+        raise ValueError(
+            "generate_bezier_bot_game: dt_samples, step_samples, and "
+            "angle_samples are required"
+        )
+    step_samples = np.asarray(step_samples, dtype=float)
+    angle_samples = np.asarray(angle_samples, dtype=float)
+    if min(len(step_samples), len(angle_samples)) == 0:
+        raise ValueError("generate_bezier_bot_game: empty motion sample array")
+
+    rng = np.random.default_rng(seed)
+    dt_samples = _resolve_dt_samples(
+        rng, dt_samples=dt_samples, dt_by_session=dt_by_session
+    )
+    lo_s, hi_s = int(stroke_points_range[0]), int(stroke_points_range[1])
+    if hi_s < lo_s:
+        lo_s, hi_s = hi_s, lo_s
+
+    dx_list, dy_list, times = [], [], []
+    current_time = 0
+    events_done = 0
+
+    while events_done < n_events:
+        if target_duration_ms is not None and current_time >= target_duration_ms:
+            break
+
+        stroke_steps = int(rng.integers(lo_s, hi_s + 1))
+        stroke_steps = min(stroke_steps, n_events - events_done)
+        if stroke_steps < 1:
+            break
+
+        dx_s, dy_s = generate_bezier_stroke(
+            rng,
+            step_samples,
+            angle_samples,
+            stroke_steps,
+            distortion=distortion,
+            bend_scale=bend_scale,
+            ease=ease,
+        )
+
+        for dx, dy in zip(dx_s, dy_s):
+            if events_done >= n_events:
+                break
+            if target_duration_ms is not None and current_time >= target_duration_ms:
+                break
+            current_time += _sample_dt_ms(rng, dt_samples)
+            if round_deltas:
+                dx, dy = round(dx), round(dy)
+                if dx == 0 and dy == 0:
+                    continue
+            dx_list.append(float(dx))
+            dy_list.append(float(dy))
+            times.append(current_time)
+            events_done += 1
+
+    return pd.DataFrame({"dx": dx_list, "dy": dy_list, "time": times})
