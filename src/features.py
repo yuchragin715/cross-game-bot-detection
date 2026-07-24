@@ -11,11 +11,11 @@ cross_game_feature_cols = [
     "speed_std", "speed_max", "dist_std",
 ]
 
-SCALE_FREE_COLS = ["speed_cv", "speed_peak", "dist_cv", "turn_angle"]
+SCALE_INVARIANT_COLS = ["speed_cv", "speed_peak", "dist_cv", "turn_angle"]
 _EPS = 1e-9
 
 
-def to_scale_free(feat_df):
+def to_scale_invariant(feat_df):
     out = pd.DataFrame(index=feat_df.index)
     out["speed_cv"] = feat_df["speed_std"] / (feat_df["avg_speed"] + _EPS)
     out["speed_peak"] = feat_df["speed_max"] / (feat_df["avg_speed"] + _EPS)
@@ -33,7 +33,6 @@ def extract_features(mouse_df):
     dt = df["time"].diff()
     valid = dt > 0
     speed = distance[valid] / dt[valid]
-    
     raw_turn = np.arctan2(df["dy"], df["dx"]).diff()
     angles = ((raw_turn + np.pi) % (2 * np.pi) - np.pi).abs()[valid]
 
