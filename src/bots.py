@@ -93,7 +93,6 @@ def collect_human_motion_samples(
 
 
 def collect_dt_samples(mouse_dfs, max_samples=200_000, rng=None):
-    """Backward-compatible alias: only the dt array."""
     return collect_human_motion_samples(mouse_dfs, max_samples=max_samples, rng=rng)[
         "dt_samples"
     ]
@@ -516,3 +515,126 @@ def generate_bezier_bot_game(
             events_done += 1
 
     return pd.DataFrame({"dx": dx_list, "dy": dy_list, "time": times})
+
+
+def generate_bot_mouse_games(
+    mouse_dfs,
+    human_feat_df,
+    n_bots=None,
+    rng_seed=RNG_SEED,
+    round_deltas=True,
+    id_prefix="bot",
+):
+    mice = [m for m in mouse_dfs if m is not None and len(m) >= 2]
+    if not mice:
+        raise ValueError("generate_bot_mouse_games: no usable mouse traces")
+    if n_bots is None:
+        n_bots = len(human_feat_df)
+    n_bots = int(n_bots)
+    if n_bots < 1:
+        raise ValueError("generate_bot_mouse_games: n_bots < 1")
+
+    rng = np.random.default_rng(rng_seed)
+    segment_pool = []
+    for mouse in mice:
+        segment_pool.extend(build_segments(mouse, rng=rng))
+    if not segment_pool:
+        raise ValueError("generate_bot_mouse_games: empty segment pool")
+
+    motion = collect_human_motion_samples(mice, rng=rng)
+    target_ms = median_trace_duration_ms(mice)
+    median_events = int(human_feat_df["n_events"].median())
+    smooth_params = estimate_smooth_params(human_feat_df, **motion)
+    bezier_params = estimate_bezier_params(human_feat_df, **motion)
+
+    stitch_mice, smooth_mice, bezier_mice = [], [], []
+    stitch_ids, smooth_ids, bezier_ids = [], [], []
+    for i in range(n_bots):
+        stitch_mice.append(
+            stitch_bot_game(
+                segment_pool,
+                dt_samples=motion["dt_samples"],
+                dt_by_session=motion["dt_by_session"],
+                target_duration_ms=target_ms,
+                rng=rng,
+            )
+        )
+        stitch_ids.append(f"{id_prefix}_stitch_{i}")
+
+        smooth_mice.append(
+            generate_smooth_bot_game(
+                n_events=median_events,
+                seed=rng_seed + 1000 + i,
+                round_deltas=round_deltas,
+                **smooth_params,
+            )
+        )
+        smooth_ids.append(f"{id_prefix}_smooth_{i}")
+
+        bezier_mice.append(
+            generate_bezier_bot_game(
+                n_events=median_events,
+                seed=rng_seed + 2000 + i,
+                round_deltas=round_deltas,
+                **bezier_params,
+            )
+        )
+        bezier_ids.append(f"{id_prefix}_bezier_{i}")
+
+    return {
+        "stitch": stitch_mice,
+        "smooth": smooth_mice,
+        "bezier": bezier_mice,
+        "stitch_ids": stitch_ids,
+        "smooth_ids": smooth_ids,
+        "bezier_ids": bezier_ids,
+        "n_segments": len(segment_pool),
+        "n_mice": len(mice),
+        "target_ms": target_ms,
+        "median_events": median_events,
+    }
+
+
+def generate_bot_feature_tables(
+    mouse_dfs,
+    human_feat_df,
+    n_bots=None,
+    rng_seed=RNG_SEED,
+    round_deltas=True,
+    id_prefix="bot",
+):
+    from src.features import extract_features
+
+    games = generate_bot_mouse_games(
+        mouse_dfs,
+        human_feat_df,
+        n_bots=n_bots,
+        rng_seed=rng_seed,
+        round_deltas=round_deltas,
+        id_prefix=id_prefix,
+    )
+
+    def _rows(mice, ids, user_id, bot_type):
+        rows = []
+        for mouse, gid in zip(mice, ids):
+            feats = extract_features(mouse)
+            if feats is None:
+                continue
+            feats.update({
+                "userId": user_id,
+                "gameId": gid,
+                "is_bot": 1,
+                "bot_type": bot_type,
+            })
+            rows.append(feats)
+        return pd.DataFrame(rows)
+
+    return {
+        "stitch": _rows(games["stitch"], games["stitch_ids"], -1, "stitch"),
+        "smooth": _rows(games["smooth"], games["smooth_ids"], -2, "smooth"),
+        "bezier": _rows(games["bezier"], games["bezier_ids"], -3, "bezier"),
+        "n_segments": games["n_segments"],
+        "n_mice": games["n_mice"],
+        "target_ms": games["target_ms"],
+        "median_events": games["median_events"],
+    }

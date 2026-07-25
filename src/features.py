@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+from src.config import WINDOW_MS, WINDOW_MIN_EVENTS
+
 feature_cols = [
     "total_movement", "avg_speed", "n_events", "mean_dt",
     "idle_ratio", "avg_turn_angle", "speed_std", "speed_max", "dist_std",
@@ -23,6 +25,7 @@ def to_scale_invariant(feat_df):
     out["dist_cv"] = feat_df["dist_std"] / (mean_dist + _EPS)
     out["turn_angle"] = feat_df["avg_turn_angle"]
     return out
+
 
 def extract_features(mouse_df):
     df = mouse_df.sort_values("time")
@@ -50,3 +53,70 @@ def extract_features(mouse_df):
         "speed_max": speed.max(),
         "dist_std": distance.std(),
     }
+
+
+def segment_trace(mouse_df, window_ms=None, min_events=None):
+    if window_ms is None:
+        window_ms = WINDOW_MS
+    if min_events is None:
+        min_events = WINDOW_MIN_EVENTS
+
+    if mouse_df is None or len(mouse_df) < 2:
+        return []
+
+    df = mouse_df.sort_values("time").reset_index(drop=True)
+    t0 = float(df["time"].iloc[0])
+    t_end = float(df["time"].iloc[-1])
+    if not np.isfinite(t0) or not np.isfinite(t_end) or t_end <= t0:
+        return []
+
+    windows = []
+    start = t0
+    window_ms = float(window_ms)
+    while start < t_end:
+        end = start + window_ms
+        w = df[(df["time"] >= start) & (df["time"] < end)].copy()
+        if len(w) >= int(min_events):
+            w["time"] = w["time"] - w["time"].iloc[0]
+            windows.append(w.reset_index(drop=True))
+        start = end
+    return windows
+
+
+def build_window_feature_table(
+    mouse_dfs,
+    groups,
+    session_ids,
+    is_bot,
+    window_ms=None,
+    min_events=None,
+    bot_type=None,
+):
+    mouse_dfs = list(mouse_dfs)
+    groups = list(np.asarray(groups))
+    session_ids = list(session_ids)
+    if not (len(mouse_dfs) == len(groups) == len(session_ids)):
+        raise ValueError(
+            "build_window_feature_table: mouse_dfs / groups / session_ids length mismatch"
+        )
+
+    rows = []
+    for mouse, gid, sid in zip(mouse_dfs, groups, session_ids):
+        for wi, w in enumerate(segment_trace(mouse, window_ms=window_ms, min_events=min_events)):
+            feats = extract_features(w)
+            if feats is None:
+                continue
+            feats["group"] = gid
+            feats["session_id"] = sid
+            feats["window_idx"] = wi
+            feats["is_bot"] = int(is_bot)
+            if bot_type is not None:
+                feats["bot_type"] = bot_type
+            rows.append(feats)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=list(feature_cols)
+            + ["group", "session_id", "window_idx", "is_bot", "bot_type"]
+        )
+    return pd.DataFrame(rows)
