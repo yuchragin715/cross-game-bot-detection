@@ -19,3 +19,7 @@ TARGET_DURATION_MS = 180000  # ~3 min synthetic game (matches one RE game)
 # LoL / CSGO window size (align with ~3 min RE game)
 LOL_WINDOW_MIN = 3           # minutes per LoL slice
 CSGO_WINDOW_MIN = 3          # minutes per CSGO slice (from converted mouse time)
+
+# Segment-level detection (fixed-duration non-overlapping windows)
+WINDOW_MS = 10_000           # default 10s; override per experiment if needed
+WINDOW_MIN_EVENTS = 30       # drop sparse windows before feature extraction
