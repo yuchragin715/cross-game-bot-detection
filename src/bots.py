@@ -612,23 +612,19 @@ def generate_bot_mouse_games(
     }
 
     if vae_bundle is not None:
-        from src.vae_bot import generate_vae_bot_game
+        from src.vae_bot import generate_vae_bot_games
 
-        vae_mice, vae_ids = [], []
-        for i in range(n_bots):
-            vae_mice.append(
-                generate_vae_bot_game(
-                    vae_bundle,
-                    dt_samples=motion["dt_samples"],
-                    dt_by_session=motion["dt_by_session"],
-                    target_duration_ms=target_ms,
-                    n_pool_segments=vae_n_pool_segments,
-                    seed=rng_seed + 3000 + i,
-                )
-            )
-            vae_ids.append(f"{id_prefix}_vae_{i}")
+        vae_mice = generate_vae_bot_games(
+            vae_bundle,
+            n_games=n_bots,
+            dt_samples=motion["dt_samples"],
+            dt_by_session=motion["dt_by_session"],
+            target_duration_ms=target_ms,
+            n_pool_segments=vae_n_pool_segments,
+            rng=rng,
+        )
         out["vae"] = vae_mice
-        out["vae_ids"] = vae_ids
+        out["vae_ids"] = [f"{id_prefix}_vae_{i}" for i in range(n_bots)]
 
     return out
 

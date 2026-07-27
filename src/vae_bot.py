@@ -236,7 +236,8 @@ def train_mouse_vae(
 def save_vae_bundle(bundle, path=DEFAULT_RE_WEIGHTS):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(bundle, path)
+    payload = {k: v for k, v in bundle.items() if k != "_model_cache"}
+    torch.save(payload, path)
     return path
 
 
@@ -257,6 +258,11 @@ def load_vae_bundle(path=DEFAULT_RE_WEIGHTS, map_location="cpu"):
 def vae_from_bundle(bundle, device=None):
     if device is None:
         device = torch.device("cpu")
+    else:
+        device = torch.device(device)
+    cache = bundle.get("_model_cache")
+    if cache is not None and cache.get("device") == device:
+        return cache["model"]
     model = MouseSegVAE(
         seg_len=bundle["seg_len"],
         z_dim=bundle["z_dim"],
@@ -264,6 +270,7 @@ def vae_from_bundle(bundle, device=None):
     ).to(device)
     model.load_state_dict(bundle["model_state"])
     model.eval()
+    bundle["_model_cache"] = {"device": device, "model": model}
     return model
 
 
@@ -338,6 +345,44 @@ def sample_vae_segments(
     return segments
 
 
+def generate_vae_bot_games(
+    bundle,
+    n_games,
+    dt_samples=None,
+    dt_by_session=None,
+    target_duration_ms=TARGET_DURATION_MS,
+    n_pool_segments=256,
+    rng=None,
+    seed=None,
+    device=None,
+    segment_pool=None,
+):
+    n_games = int(n_games)
+    if n_games < 1:
+        raise ValueError("generate_vae_bot_games: n_games < 1")
+    if rng is None:
+        rng = np.random.default_rng(RNG_SEED if seed is None else seed)
+    if segment_pool is None:
+        segment_pool = sample_vae_segments(
+            bundle,
+            n_segments=n_pool_segments,
+            dt_samples=dt_samples,
+            dt_by_session=dt_by_session,
+            rng=rng,
+            device=device,
+        )
+    return [
+        stitch_bot_game(
+            segment_pool,
+            dt_samples=dt_samples,
+            dt_by_session=dt_by_session,
+            target_duration_ms=target_duration_ms,
+            rng=rng,
+        )
+        for _ in range(n_games)
+    ]
+
+
 def generate_vae_bot_game(
     bundle,
     dt_samples=None,
@@ -347,21 +392,18 @@ def generate_vae_bot_game(
     rng=None,
     seed=None,
     device=None,
+    segment_pool=None,
 ):
-    if rng is None:
-        rng = np.random.default_rng(RNG_SEED if seed is None else seed)
-    segments = sample_vae_segments(
+    """Single-game helper. For many games use :func:`generate_vae_bot_games`."""
+    return generate_vae_bot_games(
         bundle,
-        n_segments=n_pool_segments,
-        dt_samples=dt_samples,
-        dt_by_session=dt_by_session,
-        rng=rng,
-        device=device,
-    )
-    return stitch_bot_game(
-        segments,
+        n_games=1,
         dt_samples=dt_samples,
         dt_by_session=dt_by_session,
         target_duration_ms=target_duration_ms,
+        n_pool_segments=n_pool_segments,
         rng=rng,
-    )
+        seed=seed,
+        device=device,
+        segment_pool=segment_pool,
+    )[0]
