@@ -209,6 +209,7 @@ def generate_smooth_bot_game(
     jitter=1.5,
     seed=None,
     round_deltas=True,
+    target_duration_ms=None,
     dt_by_session=None,
     mean_interval_ms=None,
     step_median=None,
@@ -231,11 +232,18 @@ def generate_smooth_bot_game(
     dt_samples = _resolve_dt_samples(
         rng, dt_samples=dt_samples, dt_by_session=dt_by_session
     )
+    n_events = int(n_events)
+    if n_events < 1:
+        raise ValueError("generate_smooth_bot_game: n_events < 1")
+
     dx_list, dy_list, times = [], [], []
     current_time = 0
     events_done = 0
 
     while events_done < n_events:
+        if target_duration_ms is not None and current_time >= target_duration_ms:
+            break
+
         angle = float(rng.choice(angle_samples))
         step = float(rng.choice(step_samples))
         seg_len = int(rng.integers(*segment_len_range))
@@ -245,6 +253,8 @@ def generate_smooth_bot_game(
 
         for _ in range(seg_len):
             if events_done >= n_events:
+                break
+            if target_duration_ms is not None and current_time >= target_duration_ms:
                 break
 
             dx = base_dx + rng.normal(0, jitter)
@@ -524,6 +534,8 @@ def generate_bot_mouse_games(
     rng_seed=RNG_SEED,
     round_deltas=True,
     id_prefix="bot",
+    vae_bundle=None,
+    vae_n_pool_segments=256,
 ):
     mice = [m for m in mouse_dfs if m is not None and len(m) >= 2]
     if not mice:
@@ -544,6 +556,9 @@ def generate_bot_mouse_games(
     motion = collect_human_motion_samples(mice, rng=rng)
     target_ms = median_trace_duration_ms(mice)
     median_events = int(human_feat_df["n_events"].median())
+
+    mean_dt = float(np.median(motion["dt_samples"])) if len(motion["dt_samples"]) else 1.0
+    event_cap = max(median_events, int(target_ms / max(mean_dt, 1.0)) * 3, 1)
     smooth_params = estimate_smooth_params(human_feat_df, **motion)
     bezier_params = estimate_bezier_params(human_feat_df, **motion)
 
@@ -563,9 +578,10 @@ def generate_bot_mouse_games(
 
         smooth_mice.append(
             generate_smooth_bot_game(
-                n_events=median_events,
+                n_events=event_cap,
                 seed=rng_seed + 1000 + i,
                 round_deltas=round_deltas,
+                target_duration_ms=target_ms,
                 **smooth_params,
             )
         )
@@ -573,15 +589,16 @@ def generate_bot_mouse_games(
 
         bezier_mice.append(
             generate_bezier_bot_game(
-                n_events=median_events,
+                n_events=event_cap,
                 seed=rng_seed + 2000 + i,
                 round_deltas=round_deltas,
+                target_duration_ms=target_ms,
                 **bezier_params,
             )
         )
         bezier_ids.append(f"{id_prefix}_bezier_{i}")
 
-    return {
+    out = {
         "stitch": stitch_mice,
         "smooth": smooth_mice,
         "bezier": bezier_mice,
@@ -594,6 +611,27 @@ def generate_bot_mouse_games(
         "median_events": median_events,
     }
 
+    if vae_bundle is not None:
+        from src.vae_bot import generate_vae_bot_game
+
+        vae_mice, vae_ids = [], []
+        for i in range(n_bots):
+            vae_mice.append(
+                generate_vae_bot_game(
+                    vae_bundle,
+                    dt_samples=motion["dt_samples"],
+                    dt_by_session=motion["dt_by_session"],
+                    target_duration_ms=target_ms,
+                    n_pool_segments=vae_n_pool_segments,
+                    seed=rng_seed + 3000 + i,
+                )
+            )
+            vae_ids.append(f"{id_prefix}_vae_{i}")
+        out["vae"] = vae_mice
+        out["vae_ids"] = vae_ids
+
+    return out
+
 
 def generate_bot_feature_tables(
     mouse_dfs,
@@ -602,6 +640,8 @@ def generate_bot_feature_tables(
     rng_seed=RNG_SEED,
     round_deltas=True,
     id_prefix="bot",
+    vae_bundle=None,
+    vae_n_pool_segments=256,
 ):
     from src.features import extract_features
 
@@ -612,6 +652,8 @@ def generate_bot_feature_tables(
         rng_seed=rng_seed,
         round_deltas=round_deltas,
         id_prefix=id_prefix,
+        vae_bundle=vae_bundle,
+        vae_n_pool_segments=vae_n_pool_segments,
     )
 
     def _rows(mice, ids, user_id, bot_type):
@@ -629,7 +671,7 @@ def generate_bot_feature_tables(
             rows.append(feats)
         return pd.DataFrame(rows)
 
-    return {
+    out = {
         "stitch": _rows(games["stitch"], games["stitch_ids"], -1, "stitch"),
         "smooth": _rows(games["smooth"], games["smooth_ids"], -2, "smooth"),
         "bezier": _rows(games["bezier"], games["bezier_ids"], -3, "bezier"),
@@ -638,3 +680,6 @@ def generate_bot_feature_tables(
         "target_ms": games["target_ms"],
         "median_events": games["median_events"],
     }
+    if "vae" in games:
+        out["vae"] = _rows(games["vae"], games["vae_ids"], -4, "vae")
+    return out

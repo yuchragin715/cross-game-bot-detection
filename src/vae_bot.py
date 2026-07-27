@@ -23,9 +23,10 @@ from src.config import (
 )
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
-DEFAULT_RE_WEIGHTS = ARTIFACTS_DIR / "vae_re_v1.pt"
-DEFAULT_LOL_WEIGHTS = ARTIFACTS_DIR / "vae_lol_v1.pt"
-DEFAULT_CSGO_WEIGHTS = ARTIFACTS_DIR / "vae_csgo_v1.pt"
+DEFAULT_RE_WEIGHTS = ARTIFACTS_DIR / "vae_re_v2.pt"
+DEFAULT_LOL_WEIGHTS = ARTIFACTS_DIR / "vae_lol_v4.pt"
+DEFAULT_CSGO_WEIGHTS = ARTIFACTS_DIR / "vae_csgo_v2.pt"
+NORM_AXIS_STD_V1 = "axis_std_v1"
 
 
 class MouseSegVAE(nn.Module):
@@ -94,16 +95,43 @@ def collect_fixed_length_segments(mouse_dfs, seg_len=VAE_SEG_LEN, stride=None):
     return np.stack(chunks, axis=0)
 
 
-def _normalize_segments(segments, step_median):
+def _axis_scale_from_segments(segments):
+    """Per-axis std of (N, T, 2) dx/dy — avoids MSE being dominated by larger axis."""
+    arr = np.asarray(segments, dtype=np.float64)
+    if arr.ndim != 3 or arr.shape[-1] != 2:
+        raise ValueError(f"_axis_scale_from_segments: expected (N,T,2), got {arr.shape}")
+    sx = float(np.std(arr[..., 0]))
+    sy = float(np.std(arr[..., 1]))
+    sx = sx if np.isfinite(sx) and sx > 1e-6 else 1e-6
+    sy = sy if np.isfinite(sy) and sy > 1e-6 else 1e-6
+    return np.array([sx, sy], dtype=np.float64)
+
+
+def _normalize_segments(segments, step_median=None, axis_scale=None):
+    """Normalize segments. Prefer per-axis ``axis_scale``; else scalar ``step_median``."""
+    arr = np.asarray(segments, dtype=np.float64)
+    if axis_scale is not None:
+        scale = np.asarray(axis_scale, dtype=np.float64).reshape(2)
+        if scale.shape != (2,) or not np.all(np.isfinite(scale)) or np.any(scale <= 0):
+            raise ValueError(f"invalid axis_scale: {axis_scale}")
+        return (arr / scale.reshape(1, 1, 2)).astype(np.float32), scale
     scale = float(step_median)
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError(f"invalid step_median: {step_median}")
-    return (segments / scale).astype(np.float32), scale
+    return (arr / scale).astype(np.float32), scale
+
+
+def _denormalize_recon(recon, bundle):
+    """recon: (N, T, 2) in model space → pixel deltas."""
+    if bundle.get("norm") == NORM_AXIS_STD_V1 and bundle.get("axis_scale") is not None:
+        scale = np.asarray(bundle["axis_scale"], dtype=np.float64).reshape(1, 1, 2)
+        return recon * scale
+    return recon * float(bundle["step_median"])
 
 
 def train_mouse_vae(
     mouse_dfs,
-    step_median,
+    step_median=None,
     *,
     seg_len=VAE_SEG_LEN,
     z_dim=VAE_Z_DIM,
@@ -116,6 +144,7 @@ def train_mouse_vae(
     device=None,
     stride=None,
     verbose=True,
+    per_axis_norm=True,
 ):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
@@ -123,12 +152,29 @@ def train_mouse_vae(
         device = torch.device("cpu")
 
     raw = collect_fixed_length_segments(mouse_dfs, seg_len=seg_len, stride=stride)
-    data, scale = _normalize_segments(raw, step_median)
-    if verbose:
-        print(
-            f"VAE train: n_segments={len(data)} seg_len={seg_len} "
-            f"step_median={scale:.4f} epochs={epochs} beta={beta} device={device}"
-        )
+    if per_axis_norm:
+        axis_scale = _axis_scale_from_segments(raw)
+        data, scale = _normalize_segments(raw, axis_scale=axis_scale)
+        norm_tag = NORM_AXIS_STD_V1
+        step_med_log = float(np.sqrt(axis_scale[0] * axis_scale[1]))
+        if verbose:
+            print(
+                f"VAE train: n_segments={len(data)} seg_len={seg_len} "
+                f"norm={norm_tag} axis_scale=({axis_scale[0]:.4f},{axis_scale[1]:.4f}) "
+                f"epochs={epochs} beta={beta} device={device}"
+            )
+    else:
+        if step_median is None:
+            step_median = float(np.median(np.abs(raw.reshape(-1, 2))))
+        data, scale = _normalize_segments(raw, step_median=step_median)
+        axis_scale = None
+        norm_tag = "step_median"
+        step_med_log = float(scale)
+        if verbose:
+            print(
+                f"VAE train: n_segments={len(data)} seg_len={seg_len} "
+                f"step_median={step_med_log:.4f} epochs={epochs} beta={beta} device={device}"
+            )
 
     loader = DataLoader(
         TensorDataset(torch.from_numpy(data.reshape(len(data), -1))),
@@ -173,7 +219,9 @@ def train_mouse_vae(
         "seg_len": int(seg_len),
         "z_dim": int(z_dim),
         "hidden": int(hidden),
-        "step_median": float(scale),
+        "step_median": float(step_med_log),
+        "norm": norm_tag,
+        "axis_scale": None if axis_scale is None else [float(axis_scale[0]), float(axis_scale[1])],
         "beta": float(beta),
         "epochs": int(epochs),
         "lr": float(lr),
@@ -197,10 +245,12 @@ def load_vae_bundle(path=DEFAULT_RE_WEIGHTS, map_location="cpu"):
     if not path.is_file():
         raise FileNotFoundError(f"VAE weights not found: {path}")
     bundle = torch.load(path, map_location=map_location, weights_only=False)
-    required = ("model_state", "seg_len", "z_dim", "hidden", "step_median")
+    required = ("model_state", "seg_len", "z_dim", "hidden")
     for key in required:
         if key not in bundle:
             raise ValueError(f"VAE bundle missing key: {key}")
+    if bundle.get("axis_scale") is None and bundle.get("step_median") is None:
+        raise ValueError("VAE bundle needs axis_scale or step_median for denorm")
     return bundle
 
 
@@ -267,12 +317,11 @@ def sample_vae_segments(
     model = vae_from_bundle(bundle, device=device)
     seg_len = int(bundle["seg_len"])
     z_dim = int(bundle["z_dim"])
-    scale = float(bundle["step_median"])
     dt_pool = _resolve_dt_samples(rng, dt_samples=dt_samples, dt_by_session=dt_by_session)
 
     z = torch.randn(int(n_segments), z_dim, device=device)
     recon = model.decode(z).cpu().numpy().reshape(int(n_segments), seg_len, 2)
-    recon = recon * scale
+    recon = _denormalize_recon(recon, bundle)
 
     segments = []
     for i in range(int(n_segments)):

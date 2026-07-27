@@ -7,10 +7,64 @@ from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
 
 def calibrate_threshold(human_scores, target_fpr=0.05):
     human_scores = np.asarray(human_scores)
+    if human_scores.size == 0:
+        return 0.5
     return float(np.quantile(human_scores, 1.0 - target_fpr))
 
 def _rate_above(scores, thr):
     return float((np.asarray(scores) > thr).mean())
+
+
+def _metrics_from_scores(y_true, y_score, target_fpr=0.05):
+    y_true = np.asarray(y_true)
+    y_score = np.asarray(y_score, dtype=float)
+    human = y_score[y_true == 0]
+    bot = y_score[y_true == 1]
+    thr = calibrate_threshold(human, target_fpr=target_fpr)
+
+    y_pred_05 = (y_score >= 0.5).astype(int)
+    y_pred_cal = (y_score > thr).astype(int)
+
+    def _pack(y_pred):
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+        detect = tp / (tp + fn) if (tp + fn) else 0.0
+        fpr = fp / (fp + tn) if (fp + tn) else 0.0
+        return {
+            "acc": float(accuracy_score(y_true, y_pred)),
+            "detect": float(detect),
+            "fp": float(fpr),
+        }
+
+    try:
+        auc = float(roc_auc_score(y_true, y_score))
+    except ValueError:
+        auc = float("nan")
+
+    m05 = _pack(y_pred_05)
+    mcal = _pack(y_pred_cal)
+    return {
+        "auc": auc,
+        "acc": mcal["acc"],
+        "detect": mcal["detect"],
+        "fp": mcal["fp"],
+        "thr": float(thr),
+        "target_fpr": float(target_fpr),
+        "acc_05": m05["acc"],
+        "detect_05": m05["detect"],
+        "fp_05": m05["fp"],
+        "n_test": int(len(y_true)),
+        "n_human": int(human.size),
+        "n_bot": int(bot.size),
+    }
+
+
+def _format_fold_metrics(m):
+    return (
+        f"auc={m['auc']:.3f}  |  "
+        f"cal@thr={m['thr']:.3f} acc={m['acc']:.2%} detect={m['detect']:.1%} "
+        f"fp={m['fp']:.1%}  |  "
+        f"@0.5 acc={m['acc_05']:.2%} detect={m['detect_05']:.1%} fp={m['fp_05']:.1%}"
+    )
 
 
 def group_train_test_indices(groups, test_size=0.2, random_state=42):
@@ -90,7 +144,15 @@ def train_bot_detector(
     )
     return model, acc
 
-def _fit_presplit(human_train, human_test, bot_train, bot_test, feature_cols, random_state):
+def _fit_presplit(
+    human_train,
+    human_test,
+    bot_train,
+    bot_test,
+    feature_cols,
+    random_state,
+    target_fpr=0.05,
+):
     train_df = pd.concat(
         [human_train.assign(is_bot=0), bot_train.assign(is_bot=1)],
         ignore_index=True,
@@ -103,23 +165,8 @@ def _fit_presplit(human_train, human_test, bot_train, bot_test, feature_cols, ra
     model = RandomForestClassifier(n_estimators=100, random_state=random_state)
     model.fit(train_df[cols], train_df["is_bot"])
     y_true = test_df["is_bot"].to_numpy()
-    y_pred = model.predict(test_df[cols])
     y_score = model.predict_proba(test_df[cols])[:, 1]
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-    detect = tp / (tp + fn) if (tp + fn) else 0.0
-    fpr = fp / (fp + tn) if (fp + tn) else 0.0
-    acc = accuracy_score(y_true, y_pred)
-    try:
-        auc = float(roc_auc_score(y_true, y_score))
-    except ValueError:
-        auc = float("nan")
-    return model, {
-        "acc": float(acc),
-        "auc": auc,
-        "detect": float(detect),
-        "fp": float(fpr),
-        "n_test": int(len(y_true)),
-    }
+    return model, _metrics_from_scores(y_true, y_score, target_fpr=target_fpr)
 
 
 def train_bot_detector_presplit(
@@ -163,27 +210,49 @@ def _mean_std_summary(metrics_by_bot, bot_types, name, n_splits_eff, prefix=""):
     summary_rows = []
     label = f"{name}{prefix}"
     print(f"\n=== {label}: mean ± std over {n_splits_eff} folds ===")
+    print(
+        "  (primary: AUC + human-calibrated thr≈95th pct of test-human scores; "
+        "fixed-0.5 acc can collapse to ~50% on small folds — see auc / @_05)"
+    )
     for bt in bot_types:
-        accs = np.array([m["acc"] for m in metrics_by_bot[bt]], dtype=float)
         aucs = np.array([m["auc"] for m in metrics_by_bot[bt]], dtype=float)
+        accs = np.array([m["acc"] for m in metrics_by_bot[bt]], dtype=float)
         detects = np.array([m["detect"] for m in metrics_by_bot[bt]], dtype=float)
         fps = np.array([m["fp"] for m in metrics_by_bot[bt]], dtype=float)
+        accs_05 = np.array(
+            [m.get("acc_05", np.nan) for m in metrics_by_bot[bt]], dtype=float
+        )
+        detects_05 = np.array(
+            [m.get("detect_05", np.nan) for m in metrics_by_bot[bt]], dtype=float
+        )
+        fps_05 = np.array(
+            [m.get("fp_05", np.nan) for m in metrics_by_bot[bt]], dtype=float
+        )
         summary_rows.append({
             "bot": bt,
-            "acc_mean": float(np.nanmean(accs)),
-            "acc_std": float(np.nanstd(accs, ddof=0)),
             "auc_mean": float(np.nanmean(aucs)),
             "auc_std": float(np.nanstd(aucs, ddof=0)),
+            "acc_mean": float(np.nanmean(accs)),
+            "acc_std": float(np.nanstd(accs, ddof=0)),
             "detect_mean": float(np.nanmean(detects)),
             "detect_std": float(np.nanstd(detects, ddof=0)),
             "fp_mean": float(np.nanmean(fps)),
             "fp_std": float(np.nanstd(fps, ddof=0)),
+            "acc_05_mean": float(np.nanmean(accs_05)),
+            "acc_05_std": float(np.nanstd(accs_05, ddof=0)),
+            "detect_05_mean": float(np.nanmean(detects_05)),
+            "detect_05_std": float(np.nanstd(detects_05, ddof=0)),
+            "fp_05_mean": float(np.nanmean(fps_05)),
+            "fp_05_std": float(np.nanstd(fps_05, ddof=0)),
         })
         print(
-            f"  {bt}: acc {np.nanmean(accs):.2%} ± {np.nanstd(accs):.2%}  |  "
-            f"auc {np.nanmean(aucs):.3f} ± {np.nanstd(aucs):.3f}  |  "
-            f"detect {np.nanmean(detects):.1%} ± {np.nanstd(detects):.1%}  |  "
-            f"fp {np.nanmean(fps):.1%} ± {np.nanstd(fps):.1%}"
+            f"  {bt}: auc {np.nanmean(aucs):.3f} ± {np.nanstd(aucs):.3f}  |  "
+            f"cal acc {np.nanmean(accs):.2%} ± {np.nanstd(accs):.2%}  "
+            f"detect {np.nanmean(detects):.1%} ± {np.nanstd(detects):.1%}  "
+            f"fp {np.nanmean(fps):.1%} ± {np.nanstd(fps):.1%}  |  "
+            f"@0.5 acc {np.nanmean(accs_05):.2%} ± {np.nanstd(accs_05):.2%}  "
+            f"detect {np.nanmean(detects_05):.1%} ± {np.nanstd(detects_05):.1%}  "
+            f"fp {np.nanmean(fps_05):.1%} ± {np.nanstd(fps_05):.1%}"
         )
     return pd.DataFrame(summary_rows)
 
@@ -224,21 +293,7 @@ def _fit_presplit_windows(
     agg = _aggregate_session_scores(test_df, scores)
     y_true = agg["is_bot"].to_numpy()
     y_score = agg["score"].to_numpy()
-    y_pred = (y_score >= 0.5).astype(int)
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-    detect = tp / (tp + fn) if (tp + fn) else 0.0
-    fpr = fp / (fp + tn) if (fp + tn) else 0.0
-    try:
-        auc = float(roc_auc_score(y_true, y_score))
-    except ValueError:
-        auc = float("nan")
-    out["session"] = {
-        "acc": float(accuracy_score(y_true, y_pred)),
-        "auc": auc,
-        "detect": float(detect),
-        "fp": float(fpr),
-        "n_test": int(len(y_true)),
-    }
+    out["session"] = _metrics_from_scores(y_true, y_score, target_fpr=0.05)
     return model, out
 
 
@@ -254,6 +309,8 @@ def evaluate_split_first_group_kfold(
     bot_types=("stitch", "smooth", "bezier"),
     name="in-domain",
     show_fold_detail=True,
+    vae_bundle=None,
+    vae_n_pool_segments=256,
 ):
     from src.bots import generate_bot_feature_tables
 
@@ -261,6 +318,12 @@ def evaluate_split_first_group_kfold(
     groups = np.asarray(groups)
     if len(human_df) != len(groups):
         raise ValueError("evaluate_split_first_group_kfold: len(groups) != len(human_df)")
+
+    bot_types = tuple(bot_types)
+    if "vae" in bot_types and vae_bundle is None:
+        raise ValueError(
+            "evaluate_split_first_group_kfold: bot_types includes 'vae' but vae_bundle is None"
+        )
 
     n_groups = int(len(np.unique(groups)))
     if n_groups < 2:
@@ -270,10 +333,12 @@ def evaluate_split_first_group_kfold(
 
     fold_rows = []
     metrics_by_bot = {bt: [] for bt in bot_types}
+    fold_vae = vae_bundle if "vae" in bot_types else None
 
     print(
         f"=== {name}: GroupKFold split-first "
-        f"(requested={n_splits}, used={n_splits_eff}, groups={n_groups}) ==="
+        f"(requested={n_splits}, used={n_splits_eff}, groups={n_groups}, "
+        f"bots={list(bot_types)}) ==="
     )
 
     for fold, (tr_idx, te_idx) in enumerate(
@@ -289,6 +354,8 @@ def evaluate_split_first_group_kfold(
             rng_seed=rng_seed_base + fold,
             round_deltas=round_deltas,
             id_prefix=f"{name}_f{fold}_tr",
+            vae_bundle=fold_vae,
+            vae_n_pool_segments=vae_n_pool_segments,
         )
         bots_te = generate_bot_feature_tables(
             mice_for_df(human_te),
@@ -296,6 +363,8 @@ def evaluate_split_first_group_kfold(
             rng_seed=rng_seed_base + 100 + fold,
             round_deltas=round_deltas,
             id_prefix=f"{name}_f{fold}_te",
+            vae_bundle=fold_vae,
+            vae_n_pool_segments=vae_n_pool_segments,
         )
 
         row = {
@@ -321,15 +390,16 @@ def evaluate_split_first_group_kfold(
                 random_state=random_state,
             )
             metrics_by_bot[bt].append(m)
-            row[f"{bt}_acc"] = m["acc"]
             row[f"{bt}_auc"] = m["auc"]
+            row[f"{bt}_thr"] = m["thr"]
+            row[f"{bt}_acc"] = m["acc"]
             row[f"{bt}_detect"] = m["detect"]
             row[f"{bt}_fp"] = m["fp"]
+            row[f"{bt}_acc_05"] = m["acc_05"]
+            row[f"{bt}_detect_05"] = m["detect_05"]
+            row[f"{bt}_fp_05"] = m["fp_05"]
             if show_fold_detail:
-                print(
-                    f"  {bt}: acc={m['acc']:.2%}  auc={m['auc']:.3f}  "
-                    f"detect={m['detect']:.1%}  fp={m['fp']:.1%}"
-                )
+                print(f"  {bt}: {_format_fold_metrics(m)}")
         fold_rows.append(row)
 
     fold_df = pd.DataFrame(fold_rows)
@@ -358,6 +428,8 @@ def evaluate_split_first_group_kfold_windows(
     window_ms=None,
     min_events=None,
     report_session_agg=True,
+    vae_bundle=None,
+    vae_n_pool_segments=256,
 ):
     from src.bots import generate_bot_mouse_games
     from src.config import WINDOW_MIN_EVENTS, WINDOW_MS
@@ -375,6 +447,13 @@ def evaluate_split_first_group_kfold_windows(
             "evaluate_split_first_group_kfold_windows: len(groups) != len(human_df)"
         )
 
+    bot_types = tuple(bot_types)
+    if "vae" in bot_types and vae_bundle is None:
+        raise ValueError(
+            "evaluate_split_first_group_kfold_windows: bot_types includes 'vae' "
+            "but vae_bundle is None"
+        )
+
     n_groups = int(len(np.unique(groups)))
     if n_groups < 2:
         raise ValueError(
@@ -386,11 +465,13 @@ def evaluate_split_first_group_kfold_windows(
     fold_rows = []
     metrics_by_bot = {bt: [] for bt in bot_types}
     session_metrics_by_bot = {bt: [] for bt in bot_types}
+    fold_vae = vae_bundle if "vae" in bot_types else None
 
     print(
         f"=== {name}: GroupKFold split-first WINDOWS "
         f"(window_ms={window_ms}, min_events={min_events}, "
-        f"requested={n_splits}, used={n_splits_eff}, groups={n_groups}) ==="
+        f"requested={n_splits}, used={n_splits_eff}, groups={n_groups}, "
+        f"bots={list(bot_types)}) ==="
     )
 
     for fold, (tr_idx, te_idx) in enumerate(
@@ -430,6 +511,8 @@ def evaluate_split_first_group_kfold_windows(
             rng_seed=rng_seed_base + fold,
             round_deltas=round_deltas,
             id_prefix=f"{name}_f{fold}_tr",
+            vae_bundle=fold_vae,
+            vae_n_pool_segments=vae_n_pool_segments,
         )
         bots_te = generate_bot_mouse_games(
             mice_te,
@@ -437,6 +520,8 @@ def evaluate_split_first_group_kfold_windows(
             rng_seed=rng_seed_base + 100 + fold,
             round_deltas=round_deltas,
             id_prefix=f"{name}_f{fold}_te",
+            vae_bundle=fold_vae,
+            vae_n_pool_segments=vae_n_pool_segments,
         )
 
         row = {
@@ -490,28 +575,34 @@ def evaluate_split_first_group_kfold_windows(
             )
             m = packed["window"]
             metrics_by_bot[bt].append(m)
-            row[f"{bt}_acc"] = m["acc"]
             row[f"{bt}_auc"] = m["auc"]
+            row[f"{bt}_thr"] = m["thr"]
+            row[f"{bt}_acc"] = m["acc"]
             row[f"{bt}_detect"] = m["detect"]
             row[f"{bt}_fp"] = m["fp"]
+            row[f"{bt}_acc_05"] = m["acc_05"]
+            row[f"{bt}_detect_05"] = m["detect_05"]
+            row[f"{bt}_fp_05"] = m["fp_05"]
             if show_fold_detail:
                 print(
-                    f"  {bt} [window]: acc={m['acc']:.2%}  auc={m['auc']:.3f}  "
-                    f"detect={m['detect']:.1%}  fp={m['fp']:.1%}  "
+                    f"  {bt} [window]: {_format_fold_metrics(m)}  "
                     f"(windows te human/bot={len(human_win_te)}/{len(bot_win_te)})"
                 )
             if packed["session"] is not None:
                 sm = packed["session"]
                 session_metrics_by_bot[bt].append(sm)
-                row[f"{bt}_sess_acc"] = sm["acc"]
                 row[f"{bt}_sess_auc"] = sm["auc"]
+                row[f"{bt}_sess_thr"] = sm["thr"]
+                row[f"{bt}_sess_acc"] = sm["acc"]
                 row[f"{bt}_sess_detect"] = sm["detect"]
                 row[f"{bt}_sess_fp"] = sm["fp"]
+                row[f"{bt}_sess_acc_05"] = sm["acc_05"]
+                row[f"{bt}_sess_detect_05"] = sm["detect_05"]
+                row[f"{bt}_sess_fp_05"] = sm["fp_05"]
                 if show_fold_detail:
                     print(
-                        f"  {bt} [session mean]: acc={sm['acc']:.2%}  "
-                        f"auc={sm['auc']:.3f}  detect={sm['detect']:.1%}  "
-                        f"fp={sm['fp']:.1%}  (n_sessions={sm['n_test']})"
+                        f"  {bt} [session mean]: {_format_fold_metrics(sm)}  "
+                        f"(n_sessions={sm['n_test']})"
                     )
         fold_rows.append(row)
 
