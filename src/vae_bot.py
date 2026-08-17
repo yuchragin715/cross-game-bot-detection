@@ -18,6 +18,7 @@ from src.config import (
     VAE_EPOCHS,
     VAE_HIDDEN,
     VAE_LR,
+    VAE_POOL_SEGMENTS,
     VAE_SEG_LEN,
     VAE_Z_DIM,
 )
@@ -76,11 +77,8 @@ def _vae_loss(recon, x, mu, logvar, beta=VAE_BETA):
     return recon_loss + float(beta) * kl, recon_loss.detach(), kl.detach()
 
 
-def collect_fixed_length_segments(mouse_dfs, seg_len=VAE_SEG_LEN, stride=None):
+def collect_fixed_length_segments(mouse_dfs, seg_len=VAE_SEG_LEN):
     seg_len = int(seg_len)
-    if stride is None:
-        stride = seg_len
-    stride = int(stride)
     chunks = []
     for mouse in mouse_dfs:
         if mouse is None or len(mouse) < seg_len:
@@ -88,7 +86,7 @@ def collect_fixed_length_segments(mouse_dfs, seg_len=VAE_SEG_LEN, stride=None):
         df = mouse.sort_values("time")
         dx = df["dx"].to_numpy(dtype=np.float64)
         dy = df["dy"].to_numpy(dtype=np.float64)
-        for start in range(0, len(dx) - seg_len + 1, stride):
+        for start in range(0, len(dx) - seg_len + 1, seg_len):
             chunks.append(np.stack([dx[start : start + seg_len], dy[start : start + seg_len]], axis=1))
     if not chunks:
         raise ValueError("collect_fixed_length_segments: no segments found")
@@ -141,40 +139,21 @@ def train_mouse_vae(
     lr=VAE_LR,
     beta=VAE_BETA,
     seed=RNG_SEED,
-    device=None,
-    stride=None,
-    verbose=True,
-    per_axis_norm=True,
 ):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
-    if device is None:
-        device = torch.device("cpu")
+    device = torch.device("cpu")
 
-    raw = collect_fixed_length_segments(mouse_dfs, seg_len=seg_len, stride=stride)
-    if per_axis_norm:
-        axis_scale = _axis_scale_from_segments(raw)
-        data, scale = _normalize_segments(raw, axis_scale=axis_scale)
-        norm_tag = NORM_AXIS_STD_V1
-        step_med_log = float(np.sqrt(axis_scale[0] * axis_scale[1]))
-        if verbose:
-            print(
-                f"VAE train: n_segments={len(data)} seg_len={seg_len} "
-                f"norm={norm_tag} axis_scale=({axis_scale[0]:.4f},{axis_scale[1]:.4f}) "
-                f"epochs={epochs} beta={beta} device={device}"
-            )
-    else:
-        if step_median is None:
-            step_median = float(np.median(np.abs(raw.reshape(-1, 2))))
-        data, scale = _normalize_segments(raw, step_median=step_median)
-        axis_scale = None
-        norm_tag = "step_median"
-        step_med_log = float(scale)
-        if verbose:
-            print(
-                f"VAE train: n_segments={len(data)} seg_len={seg_len} "
-                f"step_median={step_med_log:.4f} epochs={epochs} beta={beta} device={device}"
-            )
+    raw = collect_fixed_length_segments(mouse_dfs, seg_len=seg_len)
+    axis_scale = _axis_scale_from_segments(raw)
+    data = _normalize_segments(raw, axis_scale=axis_scale)
+    norm_tag = NORM_AXIS_STD_V1
+    step_med_log = float(np.sqrt(axis_scale[0] * axis_scale[1]))
+    print(
+        f"VAE train: n_segments={len(data)} seg_len={seg_len} "
+        f"norm={norm_tag} axis_scale=({axis_scale[0]:.4f},{axis_scale[1]:.4f}) "
+        f"epochs={epochs} beta={beta}"
+    )
 
     loader = DataLoader(
         TensorDataset(torch.from_numpy(data.reshape(len(data), -1))),
@@ -208,7 +187,7 @@ def train_mouse_vae(
             "kl": kl_tot / max(n_batch, 1),
         }
         history.append(row)
-        if verbose and ((epoch + 1) % 10 == 0 or epoch == 0 or epoch + 1 == int(epochs)):
+        if ((epoch + 1) % 10 == 0 or epoch == 0 or epoch + 1 == int(epochs)):
             print(
                 f"  epoch {row['epoch']:3d}/{epochs}: "
                 f"loss={row['loss']:.5f} recon={row['recon']:.5f} kl={row['kl']:.5f}"
@@ -277,7 +256,7 @@ def vae_from_bundle(bundle, device=None):
 def ensure_vae_bundle(
     mouse_dfs,
     step_median,
-    path=DEFAULT_RE_WEIGHTS,
+    path,
     force_retrain=False,
     **train_kwargs,
 ):
@@ -351,7 +330,7 @@ def generate_vae_bot_games(
     dt_samples=None,
     dt_by_session=None,
     target_duration_ms=TARGET_DURATION_MS,
-    n_pool_segments=256,
+    n_pool_segments=VAE_POOL_SEGMENTS,
     rng=None,
     seed=None,
     device=None,
@@ -381,29 +360,3 @@ def generate_vae_bot_games(
         )
         for _ in range(n_games)
     ]
-
-
-def generate_vae_bot_game(
-    bundle,
-    dt_samples=None,
-    dt_by_session=None,
-    target_duration_ms=TARGET_DURATION_MS,
-    n_pool_segments=256,
-    rng=None,
-    seed=None,
-    device=None,
-    segment_pool=None,
-):
-    """Single-game helper. For many games use :func:`generate_vae_bot_games`."""
-    return generate_vae_bot_games(
-        bundle,
-        n_games=1,
-        dt_samples=dt_samples,
-        dt_by_session=dt_by_session,
-        target_duration_ms=target_duration_ms,
-        n_pool_segments=n_pool_segments,
-        rng=rng,
-        seed=seed,
-        device=device,
-        segment_pool=segment_pool,
-    )[0]

@@ -3,14 +3,14 @@ import pandas as pd
 
 from src.config import WINDOW_MS, WINDOW_MIN_EVENTS
 
-# In-domain (per-game). mean_dt / idle_ratio are logger-sensitive — OK here, not for SI.
+# In-domain (per-game)
 feature_cols = [
     "total_movement",
     "avg_speed",
     "n_events",
     "mean_dt",
     "idle_ratio",
-    "avg_turn_angle",
+    "turn_angle_mean",
     "speed_std",
     "speed_max",
     "dist_std",
@@ -21,18 +21,17 @@ feature_cols = [
     "xy_corr",
 ]
 
-# Cross-game raw diagnostic control (unit-bound / mechanism leaks by design).
-# mean_dt removed: pure sampler fingerprint, steals the "scale fails" story.
+# Cross-game raw features
 cross_game_feature_cols = [
     "avg_speed",
     "idle_ratio",
-    "avg_turn_angle",
+    "turn_angle_mean",
     "speed_std",
     "speed_max",
     "dist_std",
 ]
 
-# Minimal SI — formal cross-game main result (parsimony).
+# Minimal scale invariant features for cross-game main result
 SCALE_INVARIANT_COLS = [
     "speed_cv",
     "speed_peak",
@@ -40,7 +39,7 @@ SCALE_INVARIANT_COLS = [
     "accel_cv",
 ]
 
-# Extended SI ablation (= main 4 + 6). Not for primary tables.
+# Extended scale invariant features (= main 4 + 6)
 SCALE_INVARIANT_EXT_COLS = SCALE_INVARIANT_COLS + [
     "turn_angle_std",
     "efficiency_sub",
@@ -50,7 +49,7 @@ SCALE_INVARIANT_EXT_COLS = SCALE_INVARIANT_COLS + [
     "step_autocorr",
 ]
 
-_EPS = 1e-9
+_EPS = 1e-9 # 0.000000001
 EFFICIENCY_SUB_EVENTS = 40  # fixed event count per sub-segment (not fixed time)
 
 
@@ -70,39 +69,33 @@ def _safe_pearson(a, b):
 
 
 def _segment_efficiency(sdx, sdy):
-    path = float(np.sqrt(sdx ** 2 + sdy ** 2).sum())
+    path = float(np.hypot(sdx, sdy).sum())
     if path <= _EPS:
         return None
     return float(np.hypot(sdx.sum(), sdy.sum()) / path)
 
 
 def _efficiency_sub_mean(dx, dy, segment_events=EFFICIENCY_SUB_EVENTS):
-    """Mean straightness over non-overlapping N-event chunks; drop incomplete tail.
-
-    If the trace is shorter than N (e.g. short 10s windows with min_events < N),
-    fall back to one whole-trace efficiency so the feature is still defined.
-    """
     dx = np.asarray(dx, dtype=float)
     dy = np.asarray(dy, dtype=float)
-    n = int(dx.size)
+    event_count = int(dx.size)
     seg = int(segment_events)
-    if n < 2 or seg < 2:
+    if event_count < 2 or seg < 2:
         return float("nan")
-    if n < seg:
-        eff = _segment_efficiency(dx, dy)
-        return float("nan") if eff is None else eff
-    vals = []
-    for start in range(0, n - seg + 1, seg):
-        eff = _segment_efficiency(dx[start : start + seg], dy[start : start + seg])
-        if eff is not None:
-            vals.append(eff)
-    if not vals:
+    if event_count < seg:
+        efficiency = _segment_efficiency(dx, dy)
+        return float("nan") if efficiency is None else efficiency
+    efficiencies = []
+    for start in range(0, event_count - seg + 1, seg):
+        efficiency = _segment_efficiency(dx[start : start + seg], dy[start : start + seg])
+        if efficiency is not None:
+            efficiencies.append(efficiency)
+    if not efficiencies:
         return float("nan")
-    return float(np.mean(vals))
+    return float(np.mean(efficiencies))
 
 
 def _dir_change_rate(dx, n_events):
-    """Sign flips of non-zero dx, divided by total event count (RE #87 style)."""
     sx = np.sign(np.asarray(dx, dtype=float))
     sx = sx[sx != 0]
     if sx.size < 2 or n_events <= 0:
@@ -111,19 +104,19 @@ def _dir_change_rate(dx, n_events):
     return float(flips / float(n_events))
 
 
+# calculate scale invariant features
 def to_scale_invariant(feat_df):
-    """Build SI columns from extract_features rows (min + ext + optional dist_cv)."""
-    out = pd.DataFrame(index=feat_df.index)
-    out["speed_cv"] = feat_df["speed_std"] / (feat_df["avg_speed"] + _EPS)
-    out["speed_peak"] = feat_df["speed_max"] / (feat_df["avg_speed"] + _EPS)
-    out["turn_angle_mean"] = feat_df["avg_turn_angle"]
-    out["accel_cv"] = feat_df["accel_cv"]
+    result = pd.DataFrame(index=feat_df.index)
+    result["speed_cv"] = feat_df["speed_std"] / (feat_df["avg_speed"] + _EPS)
+    result["speed_peak"] = feat_df["speed_max"] / (feat_df["avg_speed"] + _EPS)
+    result["turn_angle_mean"] = feat_df["turn_angle_mean"]
+    result["accel_cv"] = feat_df["accel_cv"]
 
-    # Kept for ablation / revert checks (not in SCALE_INVARIANT_COLS).
+    # calculate dist_cv
     mean_dist = feat_df["total_movement"] / (feat_df["n_events"] + _EPS)
-    out["dist_cv"] = feat_df["dist_std"] / (mean_dist + _EPS)
+    result["dist_cv"] = feat_df["dist_std"] / (mean_dist + _EPS)
 
-    # Extended SI — already dimensionless in extract_features.
+    # add extended scale invariant features
     for col in (
         "turn_angle_std",
         "efficiency_sub",
@@ -132,8 +125,8 @@ def to_scale_invariant(feat_df):
         "xy_corr",
         "step_autocorr",
     ):
-        out[col] = feat_df[col]
-    return out
+        result[col] = feat_df[col]
+    return result
 
 
 def extract_features(mouse_df):
@@ -143,19 +136,17 @@ def extract_features(mouse_df):
 
     dx = df["dx"].to_numpy(dtype=float)
     dy = df["dy"].to_numpy(dtype=float)
-    distance = np.sqrt(dx ** 2 + dy ** 2)
+    distance = np.hypot(dx, dy)
     dt = df["time"].diff()
     valid = dt > 0
     speed = distance[valid] / dt[valid]
     raw_turn = np.arctan2(dy, dx)
-    # wrap consecutive heading deltas into (-pi, pi]
+
+    # wrap consecutive heading deltas into (-pi, pi], exclude minus pi and include pi
     turn = np.diff(raw_turn)
     turn = (turn + np.pi) % (2 * np.pi) - np.pi
-    # align with valid speed rows: turn[i] is between event i and i+1 → index i+1
     valid_np = valid.to_numpy()
-    # angles at events where dt>0 correspond to steps into those events (indices 1..)
     step_idx = np.flatnonzero(valid_np)
-    # turn between (i-1, i) lives at turn[i-1]; keep turns whose end event has dt>0
     angle_vals = np.abs(turn[step_idx - 1]) if step_idx.size else np.array([])
 
     if speed.empty:
@@ -179,7 +170,7 @@ def extract_features(mouse_df):
         "n_events": n_events,
         "mean_dt": float(dt[valid].mean()),
         "idle_ratio": float((distance < 1).mean()),
-        "avg_turn_angle": float(angle_vals.mean()) if angle_vals.size else float("nan"),
+        "turn_angle_mean": float(angle_vals.mean()) if angle_vals.size else float("nan"),
         "speed_std": float(speed.std()),
         "speed_max": float(speed.max()),
         "dist_std": float(distance.std()),
@@ -188,7 +179,7 @@ def extract_features(mouse_df):
         "vh_ratio": vh_ratio,
         "dir_change_rate": _dir_change_rate(dx, n_events),
         "xy_corr": _safe_pearson(dx, dy),
-        # SI helpers (not in feature_cols)
+        # scale invariant features (not in feature_cols)
         "accel_cv": accel_cv,
         "step_autocorr": 0.5
         * (
@@ -198,30 +189,27 @@ def extract_features(mouse_df):
     }
 
 
-def segment_trace(mouse_df, window_ms=None, min_events=None):
-    if window_ms is None:
-        window_ms = WINDOW_MS
-    if min_events is None:
-        min_events = WINDOW_MIN_EVENTS
-
+def segment_trace(mouse_df, window_ms=WINDOW_MS, min_events=WINDOW_MIN_EVENTS):
     if mouse_df is None or len(mouse_df) < 2:
         return []
 
     df = mouse_df.sort_values("time").reset_index(drop=True)
-    t0 = float(df["time"].iloc[0])
+    t_start = float(df["time"].iloc[0])
     t_end = float(df["time"].iloc[-1])
-    if not np.isfinite(t0) or not np.isfinite(t_end) or t_end <= t0:
+    if not np.isfinite(t_start) or not np.isfinite(t_end) or t_end <= t_start:
         return []
 
     windows = []
-    start = t0
+    start = t_start
     window_ms = float(window_ms)
+
+    # iterate over the trace and cut it into windows
     while start < t_end:
         end = start + window_ms
-        w = df[(df["time"] >= start) & (df["time"] < end)].copy()
-        if len(w) >= int(min_events):
-            w["time"] = w["time"] - w["time"].iloc[0]
-            windows.append(w.reset_index(drop=True))
+        window = df[(df["time"] >= start) & (df["time"] < end)].copy()
+        if len(window) >= int(min_events):
+            window["time"] = window["time"] - window["time"].iloc[0]
+            windows.append(window.reset_index(drop=True))
         start = end
     return windows
 
@@ -231,8 +219,6 @@ def build_window_feature_table(
     groups,
     session_ids,
     is_bot,
-    window_ms=None,
-    min_events=None,
     bot_type=None,
 ):
     mouse_dfs = list(mouse_dfs)
@@ -243,15 +229,16 @@ def build_window_feature_table(
             "build_window_feature_table: mouse_dfs / groups / session_ids length mismatch"
         )
 
+    # extract features for each window
     rows = []
-    for mouse, gid, sid in zip(mouse_dfs, groups, session_ids):
-        for wi, w in enumerate(segment_trace(mouse, window_ms=window_ms, min_events=min_events)):
-            feats = extract_features(w)
+    for mouse, group_id, session_id in zip(mouse_dfs, groups, session_ids):
+        for window_idx, window in enumerate(segment_trace(mouse)):
+            feats = extract_features(window)
             if feats is None:
                 continue
-            feats["group"] = gid
-            feats["session_id"] = sid
-            feats["window_idx"] = wi
+            feats["group"] = group_id
+            feats["session_id"] = session_id
+            feats["window_idx"] = window_idx
             feats["is_bot"] = int(is_bot)
             if bot_type is not None:
                 feats["bot_type"] = bot_type

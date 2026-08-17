@@ -1,13 +1,23 @@
 .venv/
 venv/
+docs/
+artifacts/
+scripts/
 
 __pycache__/
 *.pyc
 *.pyo
 
 .ipynb_checkpoints/
+claude_refactor/
 
 data/
 .DS_Store
 
 .vscode/
+
+CONTEXT.md
+TODO.md
+PROJECT_PLAN.md
+
+.gitignore

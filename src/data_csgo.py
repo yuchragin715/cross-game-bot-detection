@@ -36,19 +36,19 @@ def eye_vectors_to_mouse_df(
     d_yaw = (d_yaw + 180.0) % 360.0 - 180.0   # wrap across +/-180 seam
     d_pitch = np.diff(pitch)
 
-    out = pd.DataFrame({"dx": d_yaw, "dy": d_pitch, "time": (time_s[1:] - time_s[0]) * 1000.0})
-    keep = (out["dx"].abs() <= teleport_deg) & (out["dy"].abs() <= teleport_deg)
+    result = pd.DataFrame({"dx": d_yaw, "dy": d_pitch, "time": (time_s[1:] - time_s[0]) * 1000.0})
+    keep = (result["dx"].abs() <= teleport_deg) & (result["dy"].abs() <= teleport_deg)
     n_drop = int((~keep).sum())
-    out = out.loc[keep].reset_index(drop=True)
+    result = result.loc[keep].reset_index(drop=True)
 
 
     meta = {
         "n_in": int(len(time_s)),
-        "n_out": int(len(out)),
+        "n_out": int(len(result)),
         "n_teleport_dropped": n_drop,
         "teleport_frac": n_drop / max(len(d_yaw), 1),
     }
-    return out, meta
+    return result, meta
 
 def validate_real_roundtrip(
     eye_x, eye_y, eye_z,

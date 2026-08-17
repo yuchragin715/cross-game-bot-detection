@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
-
 from src.config import (
     SEGMENT_MS_RANGE,
     MIN_EVENTS,
     TARGET_DURATION_MS,
     RNG_SEED,
+    VAE_POOL_SEGMENTS,
 )
 
 
@@ -47,11 +47,11 @@ def collect_human_motion_samples(
         if valid_dt.any():
             dt_chunks.append(dt[valid_dt])
         step = np.hypot(dx, dy)
-        ok = np.isfinite(step)
-        if ok.any():
-            step_chunks.append(step[ok])
-            dx_chunks.append(dx[ok])
-            dy_chunks.append(dy[ok])
+        valid_step = np.isfinite(step)
+        if valid_step.any():
+            step_chunks.append(step[valid_step])
+            dx_chunks.append(dx[valid_step])
+            dy_chunks.append(dy[valid_step])
 
     if not dt_chunks:
         raise ValueError("collect_human_motion_samples: no positive dt values found")
@@ -59,10 +59,10 @@ def collect_human_motion_samples(
         raise ValueError("collect_human_motion_samples: no steps found")
 
     all_steps = np.concatenate(step_chunks)
-    positive = all_steps[all_steps > 0]
+    valid_steps = all_steps[all_steps > 0]
     if min_step is None:
-        # Ignore micro-jitter / near-idle events when learning angles & steps.
-        min_step = float(np.percentile(positive, 40)) if len(positive) else 1e-9
+        # Ignore micro-jitter / near-idle events when learning angles & steps
+        min_step = float(np.percentile(valid_steps, 40)) if len(valid_steps) else 1e-9
         min_step = max(min_step, 1e-9)
 
     dx_all = np.concatenate(dx_chunks)
@@ -73,13 +73,11 @@ def collect_human_motion_samples(
         raise ValueError("collect_human_motion_samples: no moving steps above floor")
 
     raw_steps = step_all[moving]
-    # Bulk of the moving distribution only — not rare flicks (would be held
-    # for a whole smooth segment and explode the path).
     step_samples = _clip_percentiles(raw_steps, step_p_low, step_p_high)
-    lo, hi = np.percentile(raw_steps, [step_p_low, step_p_high])
-    ang_all = np.arctan2(dy_all[moving], dx_all[moving])
-    ang_keep = (raw_steps >= lo) & (raw_steps <= hi)
-    angle_samples = ang_all[ang_keep] if ang_keep.any() else ang_all
+    p_low, p_high = np.percentile(raw_steps, [step_p_low, step_p_high])
+    angle_all = np.arctan2(dy_all[moving], dx_all[moving])
+    angle_keep = (raw_steps >= p_low) & (raw_steps <= p_high)
+    angle_samples = angle_all[angle_keep] if angle_keep.any() else angle_all
 
     return {
         "dt_samples": _subsample(np.concatenate(dt_chunks), max_samples, rng),
@@ -87,30 +85,24 @@ def collect_human_motion_samples(
         "step_samples": _subsample(step_samples, max_samples, rng),
         "angle_samples": _subsample(angle_samples, max_samples, rng),
         "min_step_floor": float(min_step),
-        "step_clip": (float(lo), float(hi)),
+        "step_clip": (float(p_low), float(p_high)),
     }
 
 
-
-def collect_dt_samples(mouse_dfs, max_samples=200_000, rng=None):
-    return collect_human_motion_samples(mouse_dfs, max_samples=max_samples, rng=rng)[
-        "dt_samples"
-    ]
-
-
 def median_trace_duration_ms(mouse_dfs, default_ms=TARGET_DURATION_MS):
-    durs = [
+    # Return the median duration of the mouse traces
+    durations = [
         float(m["time"].iloc[-1])
         for m in mouse_dfs
         if m is not None and len(m) > 0
     ]
-    return float(np.median(durs)) if durs else float(default_ms)
+    return float(np.median(durations)) if durations else float(default_ms)
 
 
 def _sample_dt_ms(rng, dt_samples):
     return max(1, int(round(float(rng.choice(dt_samples)))))
 
-
+# if dt_by_session exists return a random session, else return dt_samples
 def _resolve_dt_samples(rng, dt_samples=None, dt_by_session=None):
     if dt_by_session is not None:
         sessions = [np.asarray(s, dtype=float) for s in dt_by_session if len(s) > 0]
@@ -142,13 +134,12 @@ def build_segments(
     segment_ms_range=SEGMENT_MS_RANGE,
     min_events=MIN_EVENTS,
     rng=None,
-    segment_ms=None,  # ignored; kept so old keyword calls do not crash
 ):
     if rng is None:
         rng = np.random.default_rng(RNG_SEED)
-    lo, hi = int(segment_ms_range[0]), int(segment_ms_range[1])
-    if hi < lo:
-        lo, hi = hi, lo
+    lower_ms, upper_ms = int(segment_ms_range[0]), int(segment_ms_range[1])
+    if upper_ms < lower_ms:
+        lower_ms, upper_ms = upper_ms, lower_ms
 
     sorted_events = mouse_df.sort_values("time").reset_index(drop=True)
     segments = []
@@ -157,17 +148,19 @@ def build_segments(
 
     times = sorted_events["time"].to_numpy()
     start = 0
-    target_ms = int(rng.integers(lo, hi + 1))
+    # Randomly sample a segment length between 1500ms and 2500ms
+    target_ms = int(rng.integers(lower_ms, upper_ms + 1))
     for index in range(len(times)):
-        if times[index] - times[start] >= target_ms:
-            if index + 1 - start >= min_events:
-                segment = sorted_events.iloc[start:index + 1].copy()
-                segment["rel_time"] = segment["time"] - segment["time"].iloc[0]
-                segments.append(
-                    segment[["dx", "dy", "rel_time"]].reset_index(drop=True)
-                )
-            start = index + 1
-            target_ms = int(rng.integers(lo, hi + 1))
+        if times[index] - times[start] < target_ms:
+            continue
+        if index + 1 - start >= min_events:
+            segment = sorted_events.iloc[start:index + 1].copy()
+            segment["rel_time"] = segment["time"] - segment["time"].iloc[0]
+            segments.append(
+                segment[["dx", "dy", "rel_time"]].reset_index(drop=True)
+            )
+        start = index + 1
+        target_ms = int(rng.integers(lower_ms, upper_ms + 1))
     return segments
 
 
@@ -180,10 +173,12 @@ def stitch_bot_game(
 ):
     if rng is None:
         rng = np.random.default_rng(RNG_SEED)
+    # select the dt samples, expecially for red eclipse
     dt_samples = _resolve_dt_samples(rng, dt_samples=dt_samples, dt_by_session=dt_by_session)
 
     parts = []
     current_time = 0
+    # stitch the segments together
     while current_time < target_duration_ms:
         segment = segments[rng.integers(0, len(segments))]
         t = current_time + segment["rel_time"].to_numpy()
@@ -200,6 +195,17 @@ def stitch_bot_game(
 
 
 # smooth bot
+SMOOTH_GENERATOR_KEYS = (
+    "dt_samples",
+    "dt_by_session",
+    "step_samples",
+    "angle_samples",
+    "jitter",
+)
+
+def smooth_generator_params(params):
+    return {k: params[k] for k in SMOOTH_GENERATOR_KEYS if k in params}
+
 def generate_smooth_bot_game(
     n_events=5800,
     dt_samples=None,
@@ -211,12 +217,6 @@ def generate_smooth_bot_game(
     round_deltas=True,
     target_duration_ms=None,
     dt_by_session=None,
-    mean_interval_ms=None,
-    step_median=None,
-    base_speed_range=None,
-    legacy_base_speed_times_dt=None,
-    min_step_floor=None,
-    step_clip=None,
 ):
     if dt_samples is None or step_samples is None or angle_samples is None:
         raise ValueError(
@@ -237,8 +237,7 @@ def generate_smooth_bot_game(
         raise ValueError("generate_smooth_bot_game: n_events < 1")
 
     dx_list, dy_list, times = [], [], []
-    current_time = 0
-    events_done = 0
+    current_time, events_done = 0, 0
 
     while events_done < n_events:
         if target_duration_ms is not None and current_time >= target_duration_ms:
@@ -270,7 +269,7 @@ def generate_smooth_bot_game(
 
     return pd.DataFrame({"dx": dx_list, "dy": dy_list, "time": times})
 
-
+# generate the smooth bot parameters
 def estimate_smooth_params(
     human_df,
     dt_samples,
@@ -301,7 +300,7 @@ def estimate_smooth_params(
     else:
         legacy = float("nan")
 
-    out = {
+    result = {
         "mean_interval_ms": _mean_interval_ms(dt_samples, dt_by_session),
         "step_median": step_median,
         "jitter": step_median * 0.1,
@@ -311,19 +310,19 @@ def estimate_smooth_params(
         "legacy_base_speed_times_dt": legacy,
     }
     if dt_by_session is not None:
-        out["dt_by_session"] = dt_by_session
+        result["dt_by_session"] = dt_by_session
     if min_step_floor is not None:
-        out["min_step_floor"] = min_step_floor
+        result["min_step_floor"] = min_step_floor
     if step_clip is not None:
-        out["step_clip"] = step_clip
-    return out
+        result["step_clip"] = step_clip
+    return result
 
 
 def smooth_params_for_print(params):
     dt = np.asarray(params["dt_samples"], dtype=float)
     step = np.asarray(params["step_samples"], dtype=float)
     ang = np.asarray(params["angle_samples"], dtype=float)
-    out = {
+    print_result = {
         "mean_interval_ms": params["mean_interval_ms"],
         "step_median": params["step_median"],
         "jitter": params["jitter"],
@@ -335,14 +334,14 @@ def smooth_params_for_print(params):
         "step_p95": float(np.percentile(step, 95)),
     }
     if "dt_by_session" in params and params["dt_by_session"] is not None:
-        out["n_dt_sessions"] = len(params["dt_by_session"])
+        print_result["n_dt_sessions"] = len(params["dt_by_session"])
     if "legacy_base_speed_times_dt" in params:
-        out["legacy_base_speed_times_dt"] = params["legacy_base_speed_times_dt"]
+        print_result["legacy_base_speed_times_dt"] = params["legacy_base_speed_times_dt"]
     if "step_clip" in params:
-        out["step_clip"] = params["step_clip"]
+        print_result["step_clip"] = params["step_clip"]
     if "min_step_floor" in params:
-        out["min_step_floor"] = params["min_step_floor"]
-    return out
+        print_result["min_step_floor"] = params["min_step_floor"]
+    return print_result
 
 # bezier bot
 def _ease_out_quad(u):
@@ -402,7 +401,9 @@ def generate_bezier_stroke(
     p0, p1, p2, p3 = _random_stroke_controls(
         rng, step_samples, angle_samples, stroke_steps, bend_scale
     )
+    # create the cubic bezier points
     pts = _cubic_bezier_points(p0, p1, p2, p3, n_points, ease=ease)
+    # add the normal distortion
     pts = _add_normal_distortion(pts, rng, distortion)
     d = np.diff(pts, axis=0)
     return d[:, 0], d[:, 1]
@@ -440,11 +441,11 @@ def estimate_bezier_params(
 
 
 def bezier_params_for_print(params):
-    out = smooth_params_for_print(params)
+    print_result = smooth_params_for_print(params)
     for k in ("stroke_points_range", "distortion", "bend_scale", "ease"):
         if k in params:
-            out[k] = params[k]
-    return out
+            print_result[k] = params[k]
+    return print_result
 
 
 def generate_bezier_bot_game(
@@ -482,19 +483,18 @@ def generate_bezier_bot_game(
     dt_samples = _resolve_dt_samples(
         rng, dt_samples=dt_samples, dt_by_session=dt_by_session
     )
-    lo_s, hi_s = int(stroke_points_range[0]), int(stroke_points_range[1])
-    if hi_s < lo_s:
-        lo_s, hi_s = hi_s, lo_s
+    min_steps, max_steps = int(stroke_points_range[0]), int(stroke_points_range[1])
+    if max_steps < min_steps:
+        min_steps, max_steps = max_steps, min_steps
 
     dx_list, dy_list, times = [], [], []
-    current_time = 0
-    events_done = 0
+    current_time, events_done = 0, 0
 
     while events_done < n_events:
         if target_duration_ms is not None and current_time >= target_duration_ms:
             break
 
-        stroke_steps = int(rng.integers(lo_s, hi_s + 1))
+        stroke_steps = int(rng.integers(min_steps, max_steps + 1))
         stroke_steps = min(stroke_steps, n_events - events_done)
         if stroke_steps < 1:
             break
@@ -530,31 +530,32 @@ def generate_bezier_bot_game(
 def generate_bot_mouse_games(
     mouse_dfs,
     human_feat_df,
-    n_bots=None,
     rng_seed=RNG_SEED,
     round_deltas=True,
     id_prefix="bot",
     vae_bundle=None,
-    vae_n_pool_segments=256,
 ):
-    mice = [m for m in mouse_dfs if m is not None and len(m) >= 2]
-    if not mice:
+    traces = [mouse for mouse in mouse_dfs if mouse is not None and len(mouse) >= 2]
+    if not traces:
         raise ValueError("generate_bot_mouse_games: no usable mouse traces")
-    if n_bots is None:
-        n_bots = len(human_feat_df)
-    n_bots = int(n_bots)
+    n_bots = len(human_feat_df)
     if n_bots < 1:
         raise ValueError("generate_bot_mouse_games: n_bots < 1")
+    if vae_bundle is None:
+        raise ValueError("generate_bot_mouse_games: vae_bundle is required")
+
+    from src.vae_bot import generate_vae_bot_games
 
     rng = np.random.default_rng(rng_seed)
+    # build the segment pool
     segment_pool = []
-    for mouse in mice:
+    for mouse in traces:
         segment_pool.extend(build_segments(mouse, rng=rng))
     if not segment_pool:
         raise ValueError("generate_bot_mouse_games: empty segment pool")
 
-    motion = collect_human_motion_samples(mice, rng=rng)
-    target_ms = median_trace_duration_ms(mice)
+    motion = collect_human_motion_samples(traces, rng=rng)
+    target_ms = median_trace_duration_ms(traces)
     median_events = int(human_feat_df["n_events"].median())
 
     mean_dt = float(np.median(motion["dt_samples"])) if len(motion["dt_samples"]) else 1.0
@@ -562,10 +563,10 @@ def generate_bot_mouse_games(
     smooth_params = estimate_smooth_params(human_feat_df, **motion)
     bezier_params = estimate_bezier_params(human_feat_df, **motion)
 
-    stitch_mice, smooth_mice, bezier_mice = [], [], []
-    stitch_ids, smooth_ids, bezier_ids = [], [], []
+    # generate the bot traces for each bot type
+    stitch_traces, smooth_traces, bezier_traces, vae_traces, stitch_ids, smooth_ids, bezier_ids, vae_ids = [], [], [], [], [], [], [], []
     for i in range(n_bots):
-        stitch_mice.append(
+        stitch_traces.append(
             stitch_bot_game(
                 segment_pool,
                 dt_samples=motion["dt_samples"],
@@ -574,20 +575,18 @@ def generate_bot_mouse_games(
                 rng=rng,
             )
         )
-        stitch_ids.append(f"{id_prefix}_stitch_{i}")
 
-        smooth_mice.append(
+        smooth_traces.append(
             generate_smooth_bot_game(
                 n_events=event_cap,
                 seed=rng_seed + 1000 + i,
                 round_deltas=round_deltas,
                 target_duration_ms=target_ms,
-                **smooth_params,
+                **smooth_generator_params(smooth_params),
             )
         )
-        smooth_ids.append(f"{id_prefix}_smooth_{i}")
 
-        bezier_mice.append(
+        bezier_traces.append(
             generate_bezier_bot_game(
                 n_events=event_cap,
                 seed=rng_seed + 2000 + i,
@@ -596,86 +595,30 @@ def generate_bot_mouse_games(
                 **bezier_params,
             )
         )
-        bezier_ids.append(f"{id_prefix}_bezier_{i}")
 
-    out = {
-        "stitch": stitch_mice,
-        "smooth": smooth_mice,
-        "bezier": bezier_mice,
+        stitch_ids.append(f"{id_prefix}_stitch_{i}")
+        smooth_ids.append(f"{id_prefix}_smooth_{i}")
+        bezier_ids.append(f"{id_prefix}_bezier_{i}")
+        vae_ids.append(f"{id_prefix}_vae_{i}")
+
+    vae_traces = generate_vae_bot_games(
+        vae_bundle,
+        n_games=n_bots,
+        dt_samples=motion["dt_samples"],
+        dt_by_session=motion["dt_by_session"],
+        target_duration_ms=target_ms,
+        n_pool_segments=VAE_POOL_SEGMENTS,
+        rng=rng,
+    )
+
+    return {
+        "stitch": stitch_traces,
+        "smooth": smooth_traces,
+        "bezier": bezier_traces,
+        "vae": vae_traces,
         "stitch_ids": stitch_ids,
         "smooth_ids": smooth_ids,
         "bezier_ids": bezier_ids,
-        "n_segments": len(segment_pool),
-        "n_mice": len(mice),
+        "vae_ids": vae_ids,
         "target_ms": target_ms,
-        "median_events": median_events,
     }
-
-    if vae_bundle is not None:
-        from src.vae_bot import generate_vae_bot_games
-
-        vae_mice = generate_vae_bot_games(
-            vae_bundle,
-            n_games=n_bots,
-            dt_samples=motion["dt_samples"],
-            dt_by_session=motion["dt_by_session"],
-            target_duration_ms=target_ms,
-            n_pool_segments=vae_n_pool_segments,
-            rng=rng,
-        )
-        out["vae"] = vae_mice
-        out["vae_ids"] = [f"{id_prefix}_vae_{i}" for i in range(n_bots)]
-
-    return out
-
-
-def generate_bot_feature_tables(
-    mouse_dfs,
-    human_feat_df,
-    n_bots=None,
-    rng_seed=RNG_SEED,
-    round_deltas=True,
-    id_prefix="bot",
-    vae_bundle=None,
-    vae_n_pool_segments=256,
-):
-    from src.features import extract_features
-
-    games = generate_bot_mouse_games(
-        mouse_dfs,
-        human_feat_df,
-        n_bots=n_bots,
-        rng_seed=rng_seed,
-        round_deltas=round_deltas,
-        id_prefix=id_prefix,
-        vae_bundle=vae_bundle,
-        vae_n_pool_segments=vae_n_pool_segments,
-    )
-
-    def _rows(mice, ids, user_id, bot_type):
-        rows = []
-        for mouse, gid in zip(mice, ids):
-            feats = extract_features(mouse)
-            if feats is None:
-                continue
-            feats.update({
-                "userId": user_id,
-                "gameId": gid,
-                "is_bot": 1,
-                "bot_type": bot_type,
-            })
-            rows.append(feats)
-        return pd.DataFrame(rows)
-
-    out = {
-        "stitch": _rows(games["stitch"], games["stitch_ids"], -1, "stitch"),
-        "smooth": _rows(games["smooth"], games["smooth_ids"], -2, "smooth"),
-        "bezier": _rows(games["bezier"], games["bezier_ids"], -3, "bezier"),
-        "n_segments": games["n_segments"],
-        "n_mice": games["n_mice"],
-        "target_ms": games["target_ms"],
-        "median_events": games["median_events"],
-    }
-    if "vae" in games:
-        out["vae"] = _rows(games["vae"], games["vae_ids"], -4, "vae")
-    return out

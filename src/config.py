@@ -22,7 +22,6 @@ LOL_WINDOW_MIN = 3           # legacy alias (= end - start); kept for old notebo
 LOL_MATCH_WINDOW_START_MIN = 10
 LOL_MATCH_WINDOW_END_MIN = 13
 LOL_MATCH_MIN_EVENTS = 100   # drop sparse 10–13 windows
-LOL_MOUSE_WINDOWS_CACHE_VERSION = "v1"
 LOL_TIMESTAMP_PARSE = "ms_rjust_v1"
 
 # CSGO window size (align with ~3 min RE game)
@@ -40,3 +39,4 @@ VAE_BETA = 0.5
 VAE_EPOCHS = 50
 VAE_BATCH_SIZE = 256
 VAE_LR = 1e-3
+VAE_POOL_SEGMENTS = 256  # decoded segments shared per generate_vae_bot_games call

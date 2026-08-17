@@ -11,7 +11,6 @@ from src.config import (
     LOL_MATCH_MIN_EVENTS,
     LOL_MATCH_WINDOW_END_MIN,
     LOL_MATCH_WINDOW_START_MIN,
-    LOL_MOUSE_WINDOWS_CACHE_VERSION,
     LOL_TIMESTAMP_PARSE,
     RE_DATA_ROOT,
 )
@@ -23,38 +22,29 @@ _LOL_KEYLOGGER_TZ = timezone(timedelta(hours=1))
 # load red eclipse data
 def find_red_eclipse_files():
     return sorted(
-        p for p in Path(RE_DATA_ROOT).rglob("*.json")
-        if "users" not in p.name and p.name != "sessions.json"
+        # find all json files path in the red eclipse folder
+        # and filter out the users and sessions files
+        path for path in Path(RE_DATA_ROOT).rglob("*.json")
+        if "users" not in path.name and path.name != "sessions.json"
     )
 
 
 def load_red_eclipse_mouse(file_path):
-    with open(file_path) as f:
-        game = json.load(f)
+    with open(file_path) as file:
+        game = json.load(file)
     meta = {
         "userId": game["userId"],
         "gameId": game["id"],
         "source_file": Path(file_path).name,
     }
-    mouse = [e for e in game["events"] if e.get("type") == "MouseEvent"]
+    mouse = [event for event in game["events"] if event.get("type") == "MouseEvent"]
     df = pd.DataFrame(mouse)
     if not df.empty:
         df = df[["dx", "dy", "time"]]
     return meta, df
 
 
-# load lol keylogger data
-def find_lol_keylogger_files():
-    return sorted(Path(LOL_DATA_ROOT).glob("sessions/**/*-keylogger-new.txt"))
-
-
-def find_lol_session_dirs():
-    root = Path(LOL_DATA_ROOT) / "sessions"
-    if not root.is_dir():
-        return []
-    return sorted(p for p in root.iterdir() if p.is_dir())
-
-
+# load lol dataset shift function
 def _load_lol_shift_fn():
     shift_path = Path(LOL_DATA_ROOT) / "shift.py"
     if not shift_path.is_file():
@@ -65,6 +55,7 @@ def _load_lol_shift_fn():
     return mod.getShift
 
 
+# parse lol timestamp to milliseconds
 def _parse_lol_timestamp_ms(ts_str):
     date_part, time_part = ts_str.split("T")
     if "." in time_part:
@@ -77,40 +68,7 @@ def _parse_lol_timestamp_ms(ts_str):
     return int(base.timestamp() * 1000) + extra_ms
 
 
-def parse_lol_keylogger(file_path, max_events=None, max_minutes=None):
-    rows = []
-    t0_ms = None
-    with open(file_path, encoding="utf-8", errors="replace") as file:
-        for line in file:
-            line = line.strip()
-            if not line or line.startswith(("Subject", "File ", "Version", "Released", "Elapsed")):
-                continue
-            parts = line.split("\t")
-            if len(parts) < 4 or parts[1].strip() != "Moved":
-                continue
-            ts_str = parts[0]
-            try:
-                time_ms = _parse_lol_timestamp_ms(ts_str)
-                if t0_ms is None:
-                    t0_ms = time_ms
-                if max_minutes and (time_ms - t0_ms) > max_minutes * 60 * 1000:
-                    break
-                rows.append({"x": int(parts[2]), "y": int(parts[3]), "time_ms": time_ms})
-                if max_events and len(rows) >= max_events:
-                    break
-            except ValueError:
-                continue
-
-    if len(rows) < 2:
-        return None
-
-    df = pd.DataFrame(rows).sort_values("time_ms")
-    df["dx"] = df["x"].diff()
-    df["dy"] = df["y"].diff()
-    df["time"] = df["time_ms"] - df["time_ms"].iloc[0]
-    return df.iloc[1:][["dx", "dy", "time"]].reset_index(drop=True)
-
-
+# read lol moved absolute data
 def _read_lol_moved_abs(file_path):
     rows = []
     with open(file_path, encoding="utf-8", errors="replace") as file:
@@ -144,7 +102,7 @@ def _abs_rows_to_mouse_df(abs_df):
     out = df.iloc[1:][["dx", "dy", "time"]].reset_index(drop=True)
     return out if len(out) >= 1 else None
 
-
+# list lol matches in a session directory
 def list_lol_matches(session_dir, get_shift=None):
     session_dir = Path(session_dir)
     if get_shift is None:
@@ -171,42 +129,18 @@ def list_lol_matches(session_dir, get_shift=None):
     return matches
 
 
-def lol_mouse_windows_cache_dir(
-    window_start_min=None,
-    window_end_min=None,
-    version=None,
-):
-    if window_start_min is None:
-        window_start_min = LOL_MATCH_WINDOW_START_MIN
-    if window_end_min is None:
-        window_end_min = LOL_MATCH_WINDOW_END_MIN
-    if version is None:
-        version = LOL_MOUSE_WINDOWS_CACHE_VERSION
-    name = f"mouse_windows_{int(window_start_min)}_{int(window_end_min)}_{version}"
-    return Path(LOL_DERIVED_ROOT) / name
-
-
+# load lol match windows if /derived have no data
 def _load_lol_match_windows_from_raw(
-    window_start_min=None,
-    window_end_min=None,
-    min_events=None,
-    session_dirs=None,
-    max_keyloggers=None,
+    window_start_min=LOL_MATCH_WINDOW_START_MIN,
+    window_end_min=LOL_MATCH_WINDOW_END_MIN,
+    min_events=LOL_MATCH_MIN_EVENTS,
 ):
-    if window_start_min is None:
-        window_start_min = LOL_MATCH_WINDOW_START_MIN
-    if window_end_min is None:
-        window_end_min = LOL_MATCH_WINDOW_END_MIN
-    if min_events is None:
-        min_events = LOL_MATCH_MIN_EVENTS
     if window_end_min <= window_start_min:
         raise ValueError("window_end_min must be > window_start_min")
 
     get_shift = _load_lol_shift_fn()
-    if session_dirs is None:
-        session_dirs = find_lol_session_dirs()
-    else:
-        session_dirs = [Path(p) for p in session_dirs]
+    root = Path(LOL_DATA_ROOT) / "sessions"
+    session_dirs = sorted(p for p in root.iterdir() if p.is_dir())
 
     records = []
     n_keyloggers = 0
@@ -219,36 +153,32 @@ def _load_lol_match_windows_from_raw(
         if not matches:
             continue
         keyloggers = sorted(session_dir.glob("lol-*-keylogger-new.txt"))
-        if max_keyloggers is not None:
-            remaining = max_keyloggers - n_keyloggers
-            if remaining <= 0:
-                break
-            keyloggers = keyloggers[:remaining]
 
-        for kl_path in keyloggers:
+        for keylogger_path in keyloggers:
             n_keyloggers += 1
-            participant = kl_path.stem.split("-")[1]
-            abs_df = _read_lol_moved_abs(kl_path)
+            participant = keylogger_path.stem.split("-")[1]
+            abs_df = _read_lol_moved_abs(keylogger_path)
             if abs_df.empty:
                 n_skip_empty += 1
                 continue
 
+            # get match 10-13 minutes
             for match in matches:
                 if match["duration_s"] < window_end_min * 60:
                     n_skip_short_match += 1
                     continue
-                w0 = match["start_ms"] + int(window_start_min * 60 * 1000)
-                w1 = match["start_ms"] + int(window_end_min * 60 * 1000)
-                w1 = min(w1, match["end_ms"])
-                if w1 <= w0:
+                window_start_ms = match["start_ms"] + int(window_start_min * 60 * 1000)
+                window_end_ms = match["start_ms"] + int(window_end_min * 60 * 1000)
+                window_end_ms = min(window_end_ms, match["end_ms"])
+                if window_end_ms <= window_start_ms:
                     n_skip_short_match += 1
                     continue
 
-                sl = abs_df[(abs_df["time_ms"] >= w0) & (abs_df["time_ms"] < w1)]
-                if len(sl) < int(min_events):
+                window_abs = abs_df[(abs_df["time_ms"] >= window_start_ms) & (abs_df["time_ms"] < window_end_ms)]
+                if len(window_abs) < int(min_events):
                     n_skip_sparse += 1
                     continue
-                mouse = _abs_rows_to_mouse_df(sl)
+                mouse = _abs_rows_to_mouse_df(window_abs)
                 if mouse is None or len(mouse) < 2:
                     n_skip_sparse += 1
                     continue
@@ -259,21 +189,16 @@ def _load_lol_match_windows_from_raw(
                     "mouse": mouse,
                     "userId": f"lol_{participant}",
                     "gameId": game_id,
-                    "source_file": kl_path.name,
+                    "source_file": keylogger_path.name,
                     "session_date": session_date,
                     "participant": participant,
                     "match_id": match["match_id"],
                     "window_start_min": float(window_start_min),
                     "window_end_min": float(window_end_min),
                     "match_duration_s": match["duration_s"],
-                    "n_events_abs": int(len(sl)),
-                    "keylogger_path": str(kl_path),
+                    "n_events_abs": int(len(window_abs)),
+                    "keylogger_path": str(keylogger_path),
                 })
-
-            if max_keyloggers is not None and n_keyloggers >= max_keyloggers:
-                break
-        if max_keyloggers is not None and n_keyloggers >= max_keyloggers:
-            break
 
     summary = {
         "n_records": len(records),
@@ -292,34 +217,20 @@ def _load_lol_match_windows_from_raw(
 def _cache_manifest_matches(manifest, window_start_min, window_end_min, min_events):
     if not manifest:
         return False
-    if manifest.get("timestamp_parse") != LOL_TIMESTAMP_PARSE:
-        return False
-    if float(manifest.get("window_start_min", -1)) != float(window_start_min):
-        return False
-    if float(manifest.get("window_end_min", -1)) != float(window_end_min):
-        return False
-    if int(manifest.get("min_events", -1)) != int(min_events):
-        return False
-    return True
+    return (
+        manifest.get("timestamp_parse") == LOL_TIMESTAMP_PARSE
+        and float(manifest.get("window_start_min", -1)) == float(window_start_min)
+        and float(manifest.get("window_end_min", -1)) == float(window_end_min)
+        and int(manifest.get("min_events", -1)) == int(min_events)
+    )
 
 
 def load_lol_match_windows_from_cache(
-    cache_dir=None,
-    window_start_min=None,
-    window_end_min=None,
-    min_events=None,
-    max_keyloggers=None,
+    window_start_min=LOL_MATCH_WINDOW_START_MIN,
+    window_end_min=LOL_MATCH_WINDOW_END_MIN,
+    min_events=LOL_MATCH_MIN_EVENTS,
 ):
-    if window_start_min is None:
-        window_start_min = LOL_MATCH_WINDOW_START_MIN
-    if window_end_min is None:
-        window_end_min = LOL_MATCH_WINDOW_END_MIN
-    if min_events is None:
-        min_events = LOL_MATCH_MIN_EVENTS
-    if cache_dir is None:
-        cache_dir = lol_mouse_windows_cache_dir(window_start_min, window_end_min)
-    else:
-        cache_dir = Path(cache_dir)
+    cache_dir = Path(LOL_DERIVED_ROOT) / f"mouse_windows_{int(window_start_min)}_{int(window_end_min)}"
 
     manifest_path = cache_dir / "MANIFEST.json"
     index_path = cache_dir / "index.csv"
@@ -328,6 +239,7 @@ def load_lol_match_windows_from_cache(
 
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
+    # check if manifest matches the window start, end, and min events
     if not _cache_manifest_matches(manifest, window_start_min, window_end_min, min_events):
         raise ValueError(
             f"Cache MANIFEST mismatch at {cache_dir}: {manifest} "
@@ -339,27 +251,9 @@ def load_lol_match_windows_from_cache(
         index_path,
         dtype={"match_id": str, "participant": str, "gameId": str, "userId": str},
     )
-    if max_keyloggers is not None:
-        # First N distinct (session, keylogger) pairs — filenames alone collide across dates
-        keep_keys = []
-        seen = set()
-        for session_date, source_file in zip(
-            index_df["session_date"], index_df["source_file"]
-        ):
-            key = (session_date, source_file)
-            if key in seen:
-                continue
-            seen.add(key)
-            keep_keys.append(key)
-            if len(keep_keys) >= max_keyloggers:
-                break
-        mask = [
-            (sd, sf) in set(keep_keys)
-            for sd, sf in zip(index_df["session_date"], index_df["source_file"])
-        ]
-        index_df = index_df.loc[mask].reset_index(drop=True)
 
     records = []
+    # load records from index.csv
     for row in index_df.itertuples(index=False):
         mouse_path = cache_dir / row.mouse_file
         mouse = pd.read_csv(mouse_path)
@@ -378,18 +272,16 @@ def load_lol_match_windows_from_cache(
             "keylogger_path": getattr(row, "keylogger_path", "") or "",
         })
 
+    # count number of keylogger sessions
     if len(index_df):
-        n_kl = int(
+        n_keylogger_sessions = int(
             index_df[["session_date", "source_file"]].drop_duplicates().shape[0]
         )
     else:
-        n_kl = 0
+        n_keylogger_sessions = 0
     summary = {
         "n_records": len(records),
-        # Prefer build-time count when loading the full cache
-        "n_keyloggers": int(manifest.get("n_keyloggers", n_kl))
-        if max_keyloggers is None
-        else n_kl,
+        "n_keyloggers": int(manifest.get("n_keyloggers", n_keylogger_sessions)),
         "n_skip_short_match": int(manifest.get("n_skip_short_match", 0)),
         "n_skip_sparse": int(manifest.get("n_skip_sparse", 0)),
         "n_skip_empty": int(manifest.get("n_skip_empty", 0)),
@@ -403,43 +295,15 @@ def load_lol_match_windows_from_cache(
 
 
 def load_lol_match_windows(
-    window_start_min=None,
-    window_end_min=None,
-    min_events=None,
-    session_dirs=None,
-    max_keyloggers=None,
-    use_cache=True,
-    from_raw=False,
-    cache_dir=None,
+    window_start_min=LOL_MATCH_WINDOW_START_MIN,
+    window_end_min=LOL_MATCH_WINDOW_END_MIN,
+    min_events=LOL_MATCH_MIN_EVENTS,
 ):
-    if window_start_min is None:
-        window_start_min = LOL_MATCH_WINDOW_START_MIN
-    if window_end_min is None:
-        window_end_min = LOL_MATCH_WINDOW_END_MIN
-    if min_events is None:
-        min_events = LOL_MATCH_MIN_EVENTS
-
-    if from_raw or not use_cache:
-        return _load_lol_match_windows_from_raw(
-            window_start_min=window_start_min,
-            window_end_min=window_end_min,
-            min_events=min_events,
-            session_dirs=session_dirs,
-            max_keyloggers=max_keyloggers,
-        )
-
-    if cache_dir is None:
-        cache_dir = lol_mouse_windows_cache_dir(window_start_min, window_end_min)
-    else:
-        cache_dir = Path(cache_dir)
-
     try:
         return load_lol_match_windows_from_cache(
-            cache_dir=cache_dir,
             window_start_min=window_start_min,
             window_end_min=window_end_min,
             min_events=min_events,
-            max_keyloggers=max_keyloggers,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(
@@ -450,6 +314,4 @@ def load_lol_match_windows(
             window_start_min=window_start_min,
             window_end_min=window_end_min,
             min_events=min_events,
-            session_dirs=session_dirs,
-            max_keyloggers=max_keyloggers,
         )
