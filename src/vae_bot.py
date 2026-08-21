@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.bots import _resolve_dt_samples, _sample_dt_ms, stitch_bot_game
 from src.config import (
+    ARTIFACTS_VAE_WEIGHTS_DIR,
     PROJECT_ROOT,
     RNG_SEED,
     TARGET_DURATION_MS,
@@ -24,9 +25,9 @@ from src.config import (
 )
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
-DEFAULT_RE_WEIGHTS = ARTIFACTS_DIR / "vae_re_v2.pt"
-DEFAULT_LOL_WEIGHTS = ARTIFACTS_DIR / "vae_lol_v4.pt"
-DEFAULT_CSGO_WEIGHTS = ARTIFACTS_DIR / "vae_csgo_v2.pt"
+DEFAULT_RE_WEIGHTS = ARTIFACTS_VAE_WEIGHTS_DIR / "vae_re_v2.pt"
+DEFAULT_LOL_WEIGHTS = ARTIFACTS_VAE_WEIGHTS_DIR / "vae_lol_v4.pt"
+DEFAULT_CSGO_WEIGHTS = ARTIFACTS_VAE_WEIGHTS_DIR / "vae_csgo_v2.pt"
 NORM_AXIS_STD_V1 = "axis_std_v1"
 
 
