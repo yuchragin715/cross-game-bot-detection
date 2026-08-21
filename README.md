@@ -1,5 +1,7 @@
 # Cross-Game Mouse Trajectory Bot Detection
 
+[TOC]
+
 ## Project Structure
 
 ```
