@@ -4,7 +4,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 RE_DATA_ROOT = DATA_DIR / "red_eclipse"
-LOL_DATA_ROOT = DATA_DIR / "lol2"
+LOL_DATA_ROOT = DATA_DIR / "lol"
 LOL_DERIVED_ROOT = LOL_DATA_ROOT / "derived"
 CSGO_DATA_ROOT = DATA_DIR / "CSGO" / "data"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
