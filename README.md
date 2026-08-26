@@ -27,10 +27,11 @@ yxc1228/
 │   ├── classifiers/
 │   └── vae_weights/
 │
-├── data/                       # Raw game data (not committed)
+├── samples/trajectories/       # Short human/bot trajectory snippets for plotting
+├── data/                       # Small raw-data sample (full datasets are local-only)
 │   ├── red_eclipse/
 │   ├── lol/
-│   └── CSGO/
+│   └── CSGO/data/S001/P3/
 │
 ├── docs/                       # Design docs, notes
 ├── requirements.txt
@@ -216,24 +217,21 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Run the pipeline notebooks in order (each **Restart & Run All**):
+### Run the project without the full local datasets
 
-1. `notebooks/red_eclipse.ipynb`: builds RE cache + RE classifiers
-2. `notebooks/lol.ipynb`: builds LoL cache
-3. `notebooks/csgo.ipynb`: builds CSGO cache + CSGO classifiers
-4. `notebooks/cross_game.ipynb`: zero-shot transfer
+| Task | How |
+|------|-----|
+| Cross-game results (main evaluation) | `notebooks/cross_game.ipynb` (Restart & Run All). Uses committed feature tables + classifiers under `artifacts/`. |
+| Plot sample trajectories | Load CSVs under `samples/trajectories/` with `src.plotting.plot_trajectory` (columns `dx`, `dy`, `time`). |
+| Smoke-test raw loaders | Small raw samples under `data/` (RE: 5 games; LoL: 1 session; CS:GO: `S001/P3`). |
+
+Full end-to-end rebuild of all bots / VAE / in-domain CV needs the full local `data/` (not in Git). Raw datasets are large and externally licensed.
+
+Recommended notebook order when full data is available:
+
+1. `notebooks/red_eclipse.ipynb`
+2. `notebooks/lol.ipynb`
+3. `notebooks/csgo.ipynb`
+4. `notebooks/cross_game.ipynb`
 
 `cross_game.ipynb` trains nothing itself. It only reads `artifacts/` produced by the other three, so those must run (or their artifacts must be present) first.
-
-**Running without the raw `data/` directory** (e.g. from a fresh clone): only `cross_game.ipynb` is guaranteed to work, using the committed feature tables and classifiers. The three game notebooks read raw files directly (trajectory previews, segment pools, windowing), so they will fail without `data/`. The same applies to cache regeneration. Since `*_traces.csv` are not committed, anything deleted under `artifacts/` can only be rebuilt on a machine that has the raw data.
-
-## Key Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `numpy`, `pandas` | Data manipulation |
-| `scikit-learn` | Random Forest, GroupKFold, metrics |
-| `torch` | VAE training and inference |
-| `matplotlib` | Plotting |
-| `joblib` | Classifier save/load (`artifacts/classifiers/`) |
-| `jupyterlab` | Running the notebooks |
