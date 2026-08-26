@@ -33,7 +33,8 @@ yxc1228/
 │   ├── lol/
 │   └── CSGO/data/S001/P3/
 │
-├── docs/                       # Design docs, notes
+├── docs/
+├── notes/
 ├── requirements.txt
 └── README.md
 ```
@@ -81,7 +82,7 @@ flowchart TD
 
 | Game | Genre | Data source |
 |------|-------|-------------|
-| Red Eclipse (RE) | FPS | `data/red_eclipse/`, keylogger CSV (dx, dy, time), full game (~3 min) |
+| Red Eclipse (RE) | FPS | `data/red_eclipse/`, game JSON MouseEvent (dx, dy, time), full game (~3 min) |
 | Counter-Strike: Global Offensive (CS:GO) | FPS | `data/CSGO/`, eye-vector CSV converted to (Δyaw, Δpitch, time), Round 2+ alive (~3 min) |
 | League of Legends (LoL) | MOBA | `data/lol/`, keylogger CSV, match-aligned 10-13 min window |
 
@@ -171,7 +172,7 @@ Cached intermediates so notebooks can skip regenerating bots / retraining detect
 | `vae_weights/` | Per-game VAE weights | `vae_re_v2.pt`, `vae_lol_v4.pt`, `vae_csgo_v2.pt` |
 
 - **Games:** `re`, `lol`, `csgo` · **Bot types:** `stitch`, `smooth`, `bezier`, `vae`
-- **Feature sets:** `raw` (7 cross-game), `si_min` (4), `si_ext` (10)
+- **Feature sets:** `raw` (6 cross-game), `si_min` (4), `si_ext` (10)
 - **Committed for remote run:** `*_features.csv`, classifiers, VAE weights (~10MB). `*_traces.csv` stay local / gitignored (~2.5GB). Evaluation and `cross_game.ipynb` work from features alone.
 - Pipeline notebooks load from cache if present, else build and save (`src.artifacts_store`). In-domain GroupKFold does not save per-fold models.
 - VAE: `FORCE_RETRAIN = False` loads the files above. If the file is missing, it trains once and saves.
