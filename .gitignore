@@ -6,8 +6,9 @@ __pycache__/
 *.pyo
 
 .ipynb_checkpoints/
-
-data/
 .DS_Store
-
 .vscode/
+
+
+/data/
+/artifacts/data/*_traces.csv

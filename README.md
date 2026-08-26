@@ -81,7 +81,7 @@ flowchart TD
 | Game | Genre | Data source |
 |------|-------|-------------|
 | Red Eclipse (RE) | FPS | `data/red_eclipse/`, keylogger CSV (dx, dy, time), full game (~3 min) |
-| CS:GO | FPS | `data/CSGO/`, eye-vector CSV converted to (Δyaw, Δpitch, time), Round 2+ alive (~3 min) |
+| Counter-Strike: Global Offensive (CS:GO) | FPS | `data/CSGO/`, eye-vector CSV converted to (Δyaw, Δpitch, time), Round 2+ alive (~3 min) |
 | League of Legends (LoL) | MOBA | `data/lol/`, keylogger CSV, match-aligned 10-13 min window |
 
 ## Synthetic Bot Types
