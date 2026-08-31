@@ -16,7 +16,7 @@ yxc1228/
 │   ├── config.py               # Paths, seeds, hyperparameters
 │   ├── data.py                 # Data loaders: Red Eclipse, LoL, CS:GO
 │   ├── features.py             # Feature extraction, windowing, scale-invariant transform
-│   ├── bots.py                 # Stitch / smooth / Bézier bot generation
+│   ├── bots.py                 # Stitch / Scripted / Bézier bot generation
 │   ├── vae_bot.py              # VAE architecture, training, generation
 │   ├── evaluation.py           # GroupKFold, cross-game transfer, diagnostics
 │   ├── artifacts_store.py      # Data / classifier load-save cache
@@ -69,12 +69,12 @@ flowchart TD
     end
 
     subgraph SI ["4 · Scale-Invariant Transform"]
-        FE --> SI_T["to_scale_invariant\nSI-min (4) / SI-EXT (10)"]
+        FE --> SI_T["to_scale_invariant\nSI-min(4) / SI-ext(10)"]
     end
 
     subgraph Eval ["5 · Evaluation"]
         SI_T --> ID["In-domain\nGroupKFold CV\n(split by player)"]
-        SI_T --> CG["Cross-game Transfer\nTrain on RE →\nZero-shot test LoL / CS:GO"]
+        SI_T --> CG["Cross-game Transfer\nTrain on Red Eclipse →\nZero-shot test LoL / CS:GO"]
     end
 ```
 
@@ -91,7 +91,7 @@ flowchart TD
 ```
 Most mechanical ◄─────────────────────────────────────────────────► Most human-like
 
- ① scripted          ② Bézier             ③ VAE                 ④ stitch
+ ① Scripted          ② Bézier             ③ VAE                 ④ Stitch
     rule-based         parametric-curve      learned generation     human-segment
     random walk        baseline                                     recombination
 
@@ -132,7 +132,7 @@ All generators share one preparation step: `collect_human_motion_samples` (`src/
 
 ## Scale-Invariant Features
 
-| Name | Formula | Meaning | SI-min | SI-EXT |
+| Name | Formula | Meaning | SI-min | SI-ext |
 |------|---------|---------|:------:|:------:|
 | `speed_cv` | speed_std / avg_speed | Speed consistency (CV) | ✓ | ✓ |
 | `speed_peak` | speed_max / avg_speed | Peak speed relative to average | ✓ | ✓ |

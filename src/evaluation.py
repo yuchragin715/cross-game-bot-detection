@@ -9,6 +9,31 @@ from src.bots import generate_bot_mouse_games
 from src.config import RNG_SEED, WINDOW_MIN_EVENTS, WINDOW_MS
 from src.features import build_window_feature_table
 
+# Display-only labels (code / cache keys stay lowercase).
+_BOT_DISPLAY = (
+    ("smooth", "Scripted"),
+    ("SMOOTH", "Scripted"),
+    ("bezier", "Bézier"),
+    ("BEZIER", "Bézier"),
+    ("Bezier", "Bézier"),
+    ("stitch", "Stitch"),
+    ("STITCH", "Stitch"),
+    ("vae", "VAE"),
+)
+
+
+def _display(text):
+    if text is None:
+        return ""
+    s = str(text)
+    s = s.replace("scale-invariant EXT", "SI-ext(10)")
+    s = s.replace("scale-invariant", "SI-min(4)")
+    s = s.replace("SI-EXT", "SI-ext(10)")
+    for src, dst in _BOT_DISPLAY:
+        s = s.replace(src, dst)
+    s = s.replace("RE", "Red Eclipse")
+    return s
+
 def calibrate_threshold(human_scores, target_fpr=0.05):
     human_scores = np.asarray(human_scores)
     if human_scores.size == 0:
@@ -82,7 +107,7 @@ def _print_bot_detector_report(
     detect = tp / (tp + fn) if (tp + fn) else 0.0
     fpr = fp / (fp + tn) if (fp + tn) else 0.0
 
-    tag = f" [{name}]" if name else ""
+    tag = f" [{_display(name)}]" if name else ""
     print(f"=== In-domain Human vs Bot{tag} ===")
     print(f"Test accuracy: {acc:.2%}  ({(output_pred == output_test).sum()}/{n_test})")
     print(f"Bot detect rate (recall): {detect:.1%}, Human FP rate: {fpr:.1%}")
@@ -164,7 +189,7 @@ def _list_session_names(feat_df, prefix="session"):
 # calculate the mean and standard deviation of the metrics and print the results
 def _mean_std_summary(metrics_by_bot, bot_types, name, n_splits_eff, prefix=""):
     summary_rows = []
-    label = f"{name}{prefix}"
+    label = f"{_display(name)}{prefix}"
     print(f"\n=== {label}: mean ± std over {n_splits_eff} folds ===")
     print(
         "  (primary: AUC + human-calibrated thr≈95th pct of test-human scores; "
@@ -185,7 +210,7 @@ def _mean_std_summary(metrics_by_bot, bot_types, name, n_splits_eff, prefix=""):
             [m.get("fp_05", np.nan) for m in metrics_by_bot[bt]], dtype=float
         )
         summary_rows.append({
-            "bot": bt,
+            "bot": _display(bt),
             "auc_mean": float(np.nanmean(aucs)),
             "auc_std": float(np.nanstd(aucs, ddof=0)),
             "acc_mean": float(np.nanmean(accs)),
@@ -202,7 +227,7 @@ def _mean_std_summary(metrics_by_bot, bot_types, name, n_splits_eff, prefix=""):
             "fp_05_std": float(np.nanstd(fps_05, ddof=0)),
         })
         print(
-            f"  {bt}: auc {np.nanmean(aucs):.3f} ± {np.nanstd(aucs):.3f}  |  "
+            f"  {_display(bt)}: auc {np.nanmean(aucs):.3f} ± {np.nanstd(aucs):.3f}  |  "
             f"cal acc {np.nanmean(accs):.2%} ± {np.nanstd(accs):.2%}  "
             f"detect {np.nanmean(detects):.1%} ± {np.nanstd(detects):.1%}  "
             f"fp {np.nanmean(fps):.1%} ± {np.nanstd(fps):.1%}  |  "
@@ -299,7 +324,7 @@ def evaluate_group_kfold_windows(
     session_metrics_by_bot = {bt: [] for bt in bot_types}
 
     print(
-        f"=== {name}: GroupKFold split players"
+        f"=== {_display(name)}: GroupKFold split players"
         f"(window_ms={WINDOW_MS}, min_events={WINDOW_MIN_EVENTS}, "
         f"fold={n_splits_eff}, groups={n_groups} ==="
     )
@@ -404,7 +429,7 @@ def evaluate_group_kfold_windows(
             _store_fold_metrics(fold_logs, bot_type, window_metrics)
             if show_fold_detail:
                 print(
-                    f"  {bot_type} [window]: {_format_fold_metrics(window_metrics)}  "
+                    f"  {_display(bot_type)} [window]: {_format_fold_metrics(window_metrics)}  "
                     f"(windows te human/bot="
                     f"{fold_logs['n_test_windows_human']}/{fold_logs[f"n_test_windows_{bot_type}"]})"
                 )
@@ -413,7 +438,7 @@ def evaluate_group_kfold_windows(
                 _store_fold_metrics(fold_logs, bot_type, session_metrics, prefix="sess_")
                 if show_fold_detail:
                     print(
-                        f"  {bot_type} [session mean]: {_format_fold_metrics(session_metrics)}  "
+                        f"  {_display(bot_type)} [session mean]: {_format_fold_metrics(session_metrics)}  "
                         f"(n_sessions={session_metrics['n_test']})"
                     )
         fold_rows.append(fold_logs)
@@ -476,7 +501,7 @@ def diagnose_cross_game(
     detect_05 = float((p_bot_on_bots >= 0.5).mean())
     fp_05 = float((p_bot_on_humans >= 0.5).mean())
 
-    label = f"{tag}" + (f" | {title_suffix}" if title_suffix else "")
+    label = f"{_display(tag)}" + (f" | {_display(title_suffix)}" if title_suffix else "")
     print(f"=== [{label}] cross-game diagnose ===")
     print(f"AUC = {auc:.3f}")
     print(
