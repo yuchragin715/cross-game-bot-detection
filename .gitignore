@@ -9,9 +9,7 @@ __pycache__/
 .DS_Store
 .vscode/
 
-# Local full datasets / backup (do not push)
-/_full_data_backup/
 /data/
 
-# Full trajectory caches stay local; features are committed
 /artifacts/data/*_traces.csv
+/figures/
