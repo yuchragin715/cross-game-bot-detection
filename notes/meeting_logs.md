@@ -14,12 +14,6 @@ Presented the initial proposals — two directions, four ideas in total:
     1. Browser Fingerprinting & Privacy Dashboard: A web interface that shows users exactly what data (Hardware, Canvas, Fonts) might reveal their identity, and analyzes what kind of features (such as font list vs. screen resolution) are most unique and more likely to lead to identity leaks.
     2. Behavioral Biometrics Analysis: Analyzing mouse and keyboard dynamics to distinguish between human users and automated bots, including generating "human-like" mouse paths to test whether they can bypass detection.
 
-### Supervisor's feedback
-
-- Do background research in the literature from the last 3–4 years of top-tier Security and Privacy conferences, and identify gaps in current practice.
-- B1 (the fingerprinting dashboard) is also interesting, and would become more so if potential users of the web app/plugin were engaged after development to gather opinions and impressions.
-- Suggested venues for the literature review: SOUPS, ACM CHI, TheWebConference, etc.
-
 ---
 
 ## 13 March 2026
@@ -88,12 +82,6 @@ Based on these gaps, proposed three candidate project plans:
 
 Also raised one open question with the supervisor: most public datasets lack detailed labels for attributes such as emotion, region, or gender. Asked whether this data would need to be collected first-hand, or whether there is a better way to work around the limitation.
 
-### Supervisor's feedback
-
-- The supervisor took the HackMD write-up away to read, with a follow-up discussion arranged a few days later.
-- Reminder: for digital-footprint-style topics that require collecting specific data first-hand, ethics approval is required, which takes longer and adds procedural overhead — this must be factored into planning.
-- Decision: use public datasets instead, avoiding the ethics-approval process that first-hand data collection would require.
-
 ---
 
 ## 25 March 2026
@@ -120,11 +108,6 @@ Following up on the three plans from 13 March, compiled a list of candidate publ
 [Other open video game datasets with physiological or affective modalities.](https://www.nature.com/articles/s41597-025-05596-3/tables/1)
 ![Overview of open video game datasets](https://hackmd.io/_uploads/Bk8-8G09bg.png)
 
-### Supervisor's feedback
-
-- The supervisor pointed out that the current proposals essentially amount to building a tool; the project needs a clearer answer to what practical (or academic) problem it solves.
-- The supervisor shared one of their papers as a reference — either for inspiration, or as a basis for extending the project using the data collected in it: *U.K. Finfluencers: Exploring Content, Reach, Responsibility and Public Stance*.
-
 ---
 
 ## 8 May 2026
@@ -143,13 +126,6 @@ Proposed two problem-driven ideas — one continuing the earlier behavioural bio
 - **Real-world problem:** Social media users are easily exposed to high-risk financial advice (e.g., crypto, foreign exchange), and it is hard for regulators to track how these trends spread and who the key promoters are.
 - **Approach:** Build an interactive network map to test whether these influencers form closed circles, and identify the key connectors spreading the risky information — helping regulators focus on the main targets instead of monitoring everyone.
 - **Analysis angles:** Network density comparison (high-risk vs. low-risk sub-networks); coordination signals such as posting-time similarity, hashtag overlap, and mutual follows.
-
-### Supervisor's feedback
-
-- Conclusion of the discussion: shift towards comparing different mouse/keyboard dynamics datasets, starting by surveying which datasets can be meaningfully compared.
-- The supervisor felt the gaming-vs-office contrast is too obvious — one context is calm, the other fast-paced — so the comparison would offer limited insight.
-- Examples of better comparison settings given by the supervisor: AI-assisted coding vs. manual coding, or writing emails on a phone vs. on a computer — i.e. contexts that are similar yet subtly different.
-- The supervisor suggested comparing different game datasets; it was noted in response that the comparison need not be limited to games — different regions, demographics, or hardware categories could also be candidates.
 
 ---
 
@@ -170,13 +146,6 @@ Proposed two concrete comparison plans:
 - **Concept:** All participants type English text, but their native languages differ.
 - **Research question:** Do native English speakers and non-native speakers (e.g., from Asia or Europe) show different keystroke biometrics, such as hold time or flight time?
 - **Value:** If yes, current security models may carry cultural bias; if no, it suggests keystroke models are robust across cultures.
-
-### Supervisor's feedback
-
-- The supervisor selected the cross-game comparison (Cross-Game Generalization) direction.
-- Since the proposal cited the BEACON paper, the supervisor asked for a broader literature search, prioritising datasets published in reputable venues; less credible datasets should only be used as a fallback.
-- The supervisor had reservations about the credibility of BEACON's publication source, and advised reviewing more papers before settling on the final direction.
-- Action: continue collecting relevant papers and candidate datasets.
 
 ---
 
@@ -203,14 +172,6 @@ Backup options (from weaker sources, only if needed):
 
 AMuCS, Red Eclipse, and BEACON are all first-person shooters, so their controls are the closest; Smerdov (LoL) is a MOBA and one step removed, while Minecraft is the most different.
 
-### Supervisor's feedback
-
-- The supervisor again pressed on what real problem the project is meant to solve.
-- After revisiting the earlier discussions during the meeting, a new idea emerged: generate synthetic data for one game, train a model to distinguish human from synthetic input, then transfer the model to a second game to test whether it can still tell them apart. (Open question: would synthetic data then need to be generated for both games?)
-- This connects back to the real-world problem framed on 8 May: a continuous authentication (Zero Trust) model trained in one context may fail when deployed in another, leading to false rejections.
-- Direction agreed in the meeting: generate synthetic mouse trajectories on game A, train a detection model, then transfer it to game B to test whether it can still detect synthetic bots. The supervisor approved this direction.
-- Also informed the supervisor that access to the AMuCS (CS:GO) dataset requires a signed Data Use Agreement (DUA).
-
 ---
 
 ## 16 July 2026
@@ -228,12 +189,6 @@ The project is roughly at the halfway point, with the foundational pipeline in p
   - The two games have very different mouse behaviour, so the current features do not appear to transfer across genres.
   - Planned next steps: explore more general features to improve cross-game detection, improve the synthetic data generation to better reflect realistic bot-cheating behaviour, then re-test cross-game detection from several angles.
 - **AMuCS (CS:GO) dataset:** using it for a cross-dataset comparison between two FPS games requires a signed Data Use Agreement; the DUA document was passed to the supervisor. Alternatively, if the Red Eclipse (FPS) vs. LoL (MOBA) framework provides sufficient depth, the project scope can be adjusted.
-
-### Supervisor's feedback
-
-- The 0% cross-game detection result is not acceptable as-is; the cause needs to be investigated as the next step.
-- The supervisor suggested exploring AI / deep-learning-based approaches (e.g., generative models or LLM-based methods) for producing the synthetic data. Follow-up action: began evaluating generative models such as GANs and VAEs.
-- The AMuCS (CS:GO) DUA has been signed; the dataset files were received on 17 July.
 
 ---
 
@@ -257,12 +212,6 @@ Meeting agenda:
 - Fix: report AUC, and set the threshold from the target game's human scores only (95th percentile ≈ 5% false alarms — no bot labels needed, so still zero-day compatible).
 - Result: the smooth bot is detected at 100% in all three transfer directions.
 - The stitch bot is genuinely different — its AUC really is low, so that one is a real transfer failure.
-
-### Supervisor's feedback
-
-- Continue with the project as planned.
-- For the fourth bot tier, choose either VAE or GAN — one is sufficient.
-- Start writing the report.
 
 ---
 
@@ -290,10 +239,6 @@ Report and demonstration status:
   - CS:GO: from Round 2, alive frames only.
   - LoL: match clock 10:00–13:00 via match metadata.
 
-### Supervisor's feedback
-
-- A wrap-up meeting is scheduled for 19 or 20 August, including a mock viva presentation of the project on the day.
-
 ---
 
 ## 19 August 2026
@@ -301,7 +246,3 @@ Report and demonstration status:
 ### Discussion
 
 Wrap-up meeting: presented the viva slides, walked through the presentation content, and demonstrated the project code.
-
-### Supervisor's feedback
-
-- Suggested adding a README to the project repository, documenting what the project covers and how it is structured.

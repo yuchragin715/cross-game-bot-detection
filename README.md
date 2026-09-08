@@ -1,6 +1,7 @@
 # Cross-Game Mouse Trajectory Bot Detection
 
-[TOC]
+MSc dissertation on zero-shot, cross-game bot detection from mouse-behaviour features.
+[dissertation.pdf](dissertation.pdf)
 
 ## Project Structure
 
